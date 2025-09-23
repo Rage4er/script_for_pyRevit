@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
 __title__ = "Сортировка систем воздуховодов"
-__author__ = 'NistratovIlia'
-__doc__ = "Описание кнопки"
+__author__ = 'Rage'
+__doc__ = "Добавляет префикс к параметру <Имя системы> систем воздуховодов по порядку от П к ДВ"
 
 import clr
 clr.AddReference('RevitAPI')
@@ -24,7 +24,7 @@ all_air_systems = FilteredElementCollector(doc)\
                   .ToElements()
 
 # Список сортировки ключевых префиксов
-sort_order = ['П', 'ПЕ', 'В', 'ВЕ', 'ДП', 'ДПЕ', 'ДВ', 'ДВЕ']
+sort_order = ['П', 'ПЕ', 'В', 'ВЕ', 'ДП', 'ДПЕ', 'ДВ', 'ДВЕ', 'А', 'У']
 
 def extract_sort_key(system_name):
     # Функция возвращает индекс префикса из sort_order, иначе None
