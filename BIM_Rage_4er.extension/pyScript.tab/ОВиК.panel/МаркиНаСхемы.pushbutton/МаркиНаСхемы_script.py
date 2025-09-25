@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-__title__ = 'марки на схемы'
+__title__ = 'Марки на схемы'
 __author__ = 'Rage'
-__doc__ = 'Скрипт для проверки изоляции воздуховодов в 3D видах'
+__doc__ = 'Скрипт для простановки марки элементов систем воздуховодов в 3D видах'
 
 from pyrevit import forms, output, script
 from Autodesk.Revit.UI import TaskDialog, TaskDialogResult, TaskDialogCommonButtons
@@ -88,19 +88,20 @@ def select_3d_views():
     if not views_3d:
         forms.alert("В проекте отсутствуют 3D виды.", exitscript=True)
     
-    options = ["{} ({})".format(v.Name, v.Id) for v in views_3d]
+    # Формирование удобочитаемых вариантов
+    options = ["{} ({})".format(v.Name, v.Id.IntegerValue) for v in views_3d]
     selected_options = forms.SelectFromList.show(options, title="Выберите 3D виды", multiselect=True, button_name='Выбрать')
     
     if not selected_options:
         forms.alert("Необходимо выбрать хотя бы один 3D вид.", exitscript=True)
     
-    # Извлекаем ID из выбранных строк
+    # Извлечение выбранных видов по их Id
     selected_views = []
-    for option in selected_options:
-        # Разделяем строку на имя и ID
-        parts = option.split("(", 1)
-        if len(parts) == 2:
-            view_id_str = parts[1].replace(")", "").strip()
+    for opt in selected_options:
+        # Парсим строку, чтобы получить ID вида
+        parts = opt.split("(", 1)
+        if len(parts) > 1:
+            view_id_str = parts[1].rsplit(")", 1)[0].strip()
             try:
                 view_id = int(view_id_str)
                 for view in views_3d:
@@ -108,7 +109,7 @@ def select_3d_views():
                         selected_views.append(view)
                         break
             except ValueError:
-                continue # Пропускаем, если ID не является числом
+                continue
     
     return selected_views
 
@@ -139,7 +140,7 @@ def main():
 if __name__ == "__main__":
     result = TaskDialog.Show(
         "Подтверждение выполнения",
-        "Запустить проверку изоляции воздуховодов в 3D видах?",
+        "Проставить марки элементов систем воздуховодов в 3D видах?",
         TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No
     )
     
