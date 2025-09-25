@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 __title__ = 'марки на схемы'
 __author__ = 'Rage'
-__doc__ = '_'
+__doc__ = 'Скрипт для проверки изоляции воздуховодов в 3D видах'
 
 from pyrevit import forms, output, script
 from Autodesk.Revit.UI import TaskDialog, TaskDialogResult, TaskDialogCommonButtons
-from Autodesk.Revit.DB import FilteredElementCollector, View, BuiltInParameter, BuiltInCategory, ElementId, ViewType
+from Autodesk.Revit.DB import (
+    FilteredElementCollector, View, BuiltInParameter, BuiltInCategory, ElementId, ViewType
+)
 
 doc = __revit__.ActiveUIDocument.Document
 output = script.get_output()
@@ -16,74 +18,66 @@ lfy = output.linkify
 
 def extract_system_name(element):
     """Извлекает значение параметра 'Имя системы' из элемента"""
-    system_name_param = element.LookupParameter(u"Имя системы")
-    if system_name_param:
-        return system_name_param.AsString() or u"Не указано"
-    return u"Не указано"
+    param = element.LookupParameter(u"Имя системы")
+    return param.AsString() if param else u"Не указано"
 
 def process_element(element):
     """Обрабатывает элемент, извлекая его ID, тип изоляции и категорию."""
-    data = {}
-    data['id'] = element.Id.IntegerValue
+    data = {
+        'id': element.Id.IntegerValue,
+        'isolation': None,
+        'category': None
+    }
     
-    # Получаем тип изоляции
-    isolation_param = element.LookupParameter(u"Тип изоляции")
-    if isolation_param:
-        data['isolation'] = isolation_param.AsString() or u"Нет изоляции ⛔"
-    else:
-        data['isolation'] = u"Нет изоляции ⛔"
+    # Изоляция
+    iso_param = element.LookupParameter(u"Тип изоляции")
+    data['isolation'] = iso_param.AsString() if iso_param else u"Нет изоляции ⛔"
     
-    # Получаем категорию элемента
+    # Категория
     category = element.Category
-    if category:
-        data['category'] = category.Name
-    else:
-        data['category'] = u"Без категории"
+    data['category'] = category.Name if category else u"Без категории"
     
     return data
 
 def group_by_system(elements):
     """Группирует элементы по параметру 'Имя системы'"""
-    grouped_elements = {}
-    for element in elements:
-        system_name = extract_system_name(element)
-        if system_name not in grouped_elements:
-            grouped_elements[system_name] = []
-        grouped_elements[system_name].append(process_element(element))
-    return grouped_elements
+    groups = {}
+    for el in elements:
+        sys_name = extract_system_name(el)
+        if sys_name not in groups:
+            groups[sys_name] = []
+        groups[sys_name].append(process_element(el))
+    return groups
 
 def get_3d_views():
     """Получает все 3D виды в проекте"""
     collector = FilteredElementCollector(doc).OfClass(View)
-    views_3d = [view for view in collector if view.ViewType == ViewType.ThreeD and not view.IsTemplate]
-    return views_3d
+    return [v for v in collector if v.ViewType == ViewType.ThreeD and not v.IsTemplate]
 
 def get_elements_from_3d_views(selected_views):
     """Получает элементы из выбранных 3D видов"""
     all_elements = set()
-    
     for view in selected_views:
         try:
-            # Получаем элементы, видимые в данном 3D виде
+            # Элементы в данном 3D виде
             collector = FilteredElementCollector(doc, view.Id).WhereElementIsNotElementType()
             elements_in_view = collector.ToElements()
             
-            # Фильтруем только элементы целевых категорий
-            target_categories = [
-                BuiltInCategory.OST_DuctCurves,      # Воздуховоды
-                BuiltInCategory.OST_DuctFitting,     # Соединительные детали воздуховодов
-                BuiltInCategory.OST_DuctTerminal,    # Воздухораспределители
-                BuiltInCategory.OST_DuctAccessory,   # Арматура воздуховодов
+            # Целевые категории
+            categories = [
+                BuiltInCategory.OST_DuctCurves,       # Воздуховоды
+                BuiltInCategory.OST_DuctFitting,      # Детали соединений
+                BuiltInCategory.OST_DuctTerminal,     # Распредустройства
+                BuiltInCategory.OST_DuctAccessory,    # Адаптеры
                 BuiltInCategory.OST_MechanicalEquipment,  # Оборудование
-                BuiltInCategory.OST_DuctInsulations  # Материалы изоляции воздуховодов
+                BuiltInCategory.OST_DuctInsulations  # Изоляционные материалы
             ]
             
-            for element in elements_in_view:
-                if element.Category and element.Category.Id.IntegerValue in [cat.value__ for cat in target_categories]:
-                    all_elements.add(element)
-                    
-        except Exception as e:
-            print(u"Ошибка при обработке вида '{}': {}".format(view.Name, str(e)))
+            for elem in elements_in_view:
+                if elem.Category and elem.Category.Id.IntegerValue in [c.value__ for c in categories]:
+                    all_elements.add(elem)
+        except Exception as ex:
+            print(u"Ошибка при обработке вида {}: {}".format(view.Name, ex))
     
     return list(all_elements)
 
@@ -92,86 +86,65 @@ def select_3d_views():
     views_3d = get_3d_views()
     
     if not views_3d:
-        forms.alert("В проекте не найдено 3D видов!", exitscript=True)
+        forms.alert("В проекте отсутствуют 3D виды.", exitscript=True)
     
-    # Создаем список для выбора
-    view_options = [u"{} (ID: {})".format(view.Name, view.Id) for view in views_3d]
+    options = ["{} ({})".format(v.Name, v.Id) for v in views_3d]
+    selected_options = forms.SelectFromList.show(options, title="Выберите 3D виды", multiselect=True, button_name='Выбрать')
     
-    # Диалог выбора с множественным выбором
-    selected_view_indices = forms.SelectFromList.show(
-        view_options,
-        title="Выберите 3D виды для анализа",
-        multiselect=True,
-        button_name='Выбрать'
-    )
+    if not selected_options:
+        forms.alert("Необходимо выбрать хотя бы один 3D вид.", exitscript=True)
     
-    if not selected_view_indices:
-        forms.alert("Не выбрано ни одного 3D вида!", exitscript=True)
+    # Извлекаем ID из выбранных строк
+    selected_views = []
+    for option in selected_options:
+        # Разделяем строку на имя и ID
+        parts = option.split("(", 1)
+        if len(parts) == 2:
+            view_id_str = parts[1].replace(")", "").strip()
+            try:
+                view_id = int(view_id_str)
+                for view in views_3d:
+                    if view.Id.IntegerValue == view_id:
+                        selected_views.append(view)
+                        break
+            except ValueError:
+                continue # Пропускаем, если ID не является числом
     
-    # Получаем выбранные виды
-    selected_views = [views_3d[i] for i in selected_view_indices]
     return selected_views
 
 def main():
-    """
-    Основная программа с выбором 3D видов и группировкой элементов по параметру 'Имя системы'.
-    """
-    # Выбираем 3D виды
+    """Основная логика программы"""
     selected_views = select_3d_views()
+    print(u"Выбрано {} 3D видов.".format(len(selected_views)))
     
-    print(u"Выбрано 3D видов: {}".format(len(selected_views)))
-    for i, view in enumerate(selected_views, 1):
-        print(u"{}. {}".format(i, view.Name))
-    
-    # Получаем элементы из выбранных 3D видов
+    # Получить элементы из выбранных видов
     elements = get_elements_from_3d_views(selected_views)
     
     if not elements:
-        forms.alert("В выбранных 3D видах не найдено элементов систем воздуховодов!", exitscript=True)
+        forms.alert("Ни одного подходящего элемента не обнаружено в указанных видах.", exitscript=True)
     
-    print(u"\nНайдено элементов в выбранных видах: {}".format(len(elements)))
-    
-    # Группируем элементы по параметру 'Имя системы'
+    # Группировка элементов по системам
     grouped_elements = group_by_system(elements)
     
-    # Проходим по каждой группе и выводим таблицу
-    for system_name, elements_list in grouped_elements.items():
-        # Формируем таблицу с использованием pyRevit
-        table_data = []
-        for element_data in elements_list:
-            # Преобразуем id в ссылку с помощью linkify
-            linked_id = lfy(ElementId(element_data['id']))
-            row = [
-                linked_id,                  # Теперь это ссылка!
-                element_data['category'],
-                element_data['isolation']
-            ]
-            table_data.append(row)
-        
-        # Добавляем информацию о том, в каких видах отображается система
-        views_info = u", ".join([view.Name for view in selected_views])
-        
+    # Вывод данных
+    for sys_name, els in grouped_elements.items():
+        rows = [[lfy(ElementId(el['id'])), el['category'], el['isolation']] for el in els]
         output.print_table(
-            table_data=table_data,
-            title='<span style="color: blue;">Система: \'%s\'</span><br/>'
-                  '<span style="color: green;">3D виды: %s</span><br/>' % (system_name, views_info),
-            columns=["Идентификатор (ID)", "Категория", "Тип изоляции"],
-            formats=None
+            table_data=rows,
+            title=u"Система: {}\nВиды: {}".format(sys_name, ", ".join([v.Name for v in selected_views])),
+            columns=['Идентификатор (ID)', 'Категория', 'Тип изоляции']
         )
 
-# Основное тело программы
-if __name__ == '__main__':
-    # Диалоговое окно с вопросом
+# Главное условие запуска
+if __name__ == "__main__":
     result = TaskDialog.Show(
         "Подтверждение выполнения",
-        "Хотите запустить проверку изоляции воздуховодов в 3D видах?",
+        "Запустить проверку изоляции воздуховодов в 3D видах?",
         TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No
     )
-
-    # Подтверждение запуска
+    
     if result == TaskDialogResult.Yes:
-        print("Начало проверки изоляции в 3D видах.")
+        print("Начинаем проверку...")
         main()
     else:
-        # Ничего не делаем и завершаем скрипт
-        pass
+        print("Операция отменена пользователем.")
