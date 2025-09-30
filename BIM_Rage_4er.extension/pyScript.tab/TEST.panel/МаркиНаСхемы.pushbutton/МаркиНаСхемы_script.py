@@ -8,6 +8,7 @@ clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
 clr.AddReference('System.Windows.Forms')
 clr.AddReference('System.Drawing')
+clr.AddReference('System')
 
 from Autodesk.Revit import DB
 from Autodesk.Revit.DB import *
@@ -15,8 +16,36 @@ from Autodesk.Revit.UI import *
 from System.Collections.Generic import List
 from System.Windows.Forms import *
 from System.Drawing import *
+from System import EventHandler
 import sys
 import os
+import datetime
+
+# Глобальная переменная для логов
+log_messages = []
+
+def add_log(message):
+    """Добавление сообщения в лог"""
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+    log_message = "[{0}] {1}".format(timestamp, message)
+    log_messages.append(log_message)
+    print(log_message)
+
+def show_logs():
+    """Показать все логи в MessageBox"""
+    log_text = "\n".join(log_messages)
+    form = Form()
+    form.Text = "Логи выполнения"
+    form.Size = Size(600, 400)
+    
+    textbox = TextBox()
+    textbox.Multiline = True
+    textbox.Dock = DockStyle.Fill
+    textbox.ScrollBars = ScrollBars.Vertical
+    textbox.Text = log_text
+    
+    form.Controls.Add(textbox)
+    form.ShowDialog()
 
 # Класс для хранения настроек пользователя
 class TagSettings(object):
@@ -30,18 +59,232 @@ class TagSettings(object):
         self.orientation = TagOrientation.Horizontal
         self.use_leader = True
 
+# Вспомогательный класс для отображения в ListBox
+class FamilyListItem(object):
+    def __init__(self, display_name, tag):
+        self.display_name = display_name
+        self.Tag = tag
+    
+    def __str__(self):
+        return self.display_name
+
+# Форма для выбора семейства и типоразмера марки
+class TagFamilySelectionForm(Form):
+    def __init__(self, doc, available_families, current_family, current_type):
+        add_log("TagFamilySelectionForm: Инициализация формы выбора марки")
+        self.doc = doc
+        self.available_families = available_families
+        self.current_family = current_family
+        self.current_type = current_type
+        self.selected_family = None
+        self.selected_type = None
+        
+        self.InitializeComponent()
+        self.PopulateFamiliesList()
+    
+    def InitializeComponent(self):
+        add_log("TagFamilySelectionForm: Создание компонентов формы")
+        self.Text = "Выбор семейства и типоразмера марки"
+        self.Size = Size(500, 400)
+        self.StartPosition = FormStartPosition.CenterParent
+        self.FormBorderStyle = FormBorderStyle.FixedDialog
+        self.MaximizeBox = False
+        self.MinimizeBox = False
+        
+        # Метка для семейств
+        self.lblFamilies = Label()
+        self.lblFamilies.Text = "Выберите семейство марки:"
+        self.lblFamilies.Location = Point(10, 10)
+        self.lblFamilies.Size = Size(300, 20)
+        
+        # Список семейств
+        self.lstFamilies = ListBox()
+        self.lstFamilies.Location = Point(10, 40)
+        self.lstFamilies.Size = Size(200, 200)
+        self.lstFamilies.SelectedIndexChanged += self.OnFamilySelected
+        
+        # Метка для типоразмеров
+        self.lblTypes = Label()
+        self.lblTypes.Text = "Выберите типоразмер:"
+        self.lblTypes.Location = Point(220, 10)
+        self.lblTypes.Size = Size(300, 20)
+        
+        # Список типоразмеров
+        self.lstTypes = ListBox()
+        self.lstTypes.Location = Point(220, 40)
+        self.lstTypes.Size = Size(200, 200)
+        
+        # Кнопка OK
+        self.btnOK = Button()
+        self.btnOK.Text = "OK"
+        self.btnOK.Location = Point(300, 250)
+        self.btnOK.Size = Size(75, 25)
+        self.btnOK.Click += self.OnOKClick
+        
+        # Кнопка Отмена
+        self.btnCancel = Button()
+        self.btnCancel.Text = "Отмена"
+        self.btnCancel.Location = Point(380, 250)
+        self.btnCancel.Size = Size(75, 25)
+        self.btnCancel.Click += self.OnCancelClick
+        
+        controls = [self.lblFamilies, self.lstFamilies, self.lblTypes, self.lstTypes, self.btnOK, self.btnCancel]
+        for control in controls:
+            self.Controls.Add(control)
+    
+    def PopulateFamiliesList(self):
+        """Заполнение списка семейств"""
+        add_log("TagFamilySelectionForm: Заполнение списка семейств. Доступно: {0}".format(len(self.available_families)))
+        self.lstFamilies.Items.Clear()
+        
+        for i, family in enumerate(self.available_families):
+            if family:
+                # Получаем имя семейства
+                family_name = self.GetElementName(family)
+                add_log("TagFamilySelectionForm: Семейство {0}: {1}".format(i, family_name))
+                # Создаем объект для хранения и семейства и его имени
+                item = FamilyListItem(family_name, family)
+                self.lstFamilies.Items.Add(item)
+        
+        # Выбираем текущее семейство если есть
+        if self.current_family:
+            for i in range(self.lstFamilies.Items.Count):
+                if self.lstFamilies.Items[i].Tag == self.current_family:
+                    self.lstFamilies.SelectedIndex = i
+                    add_log("TagFamilySelectionForm: Выбрано текущее семейство с индексом {0}".format(i))
+                    break
+        # Иначе выбираем первое семейство
+        elif self.lstFamilies.Items.Count > 0:
+            self.lstFamilies.SelectedIndex = 0
+            add_log("TagFamilySelectionForm: Выбрано первое семейство по умолчанию")
+    
+    def OnFamilySelected(self, sender, args):
+        """Обработка выбора семейства"""
+        if self.lstFamilies.SelectedItem:
+            selected_item = self.lstFamilies.SelectedItem
+            selected_family = selected_item.Tag
+            add_log("TagFamilySelectionForm: Выбрано семейство: {0}".format(self.GetElementName(selected_family)))
+            self.PopulateTypesList(selected_family)
+    
+    def PopulateTypesList(self, family):
+        """Заполнение списка типоразмеров для выбранного семейства"""
+        add_log("TagFamilySelectionForm: Загрузка типоразмеров для семейства {0}".format(self.GetElementName(family)))
+        self.lstTypes.Items.Clear()
+        
+        try:
+            # Получаем все типоразмеры выбранного семейства
+            symbol_ids = family.GetFamilySymbolIds()
+            add_log("TagFamilySelectionForm: Найдено типоразмеров: {0}".format(symbol_ids.Count if symbol_ids else 0))
+            
+            if symbol_ids and symbol_ids.Count > 0:
+                symbol_id_list = list(symbol_ids)
+                for i, symbol_id in enumerate(symbol_id_list):
+                    symbol = self.doc.GetElement(symbol_id)
+                    if symbol:
+                        # Получаем имя типоразмера
+                        symbol_name = self.GetElementName(symbol)
+                        add_log("TagFamilySelectionForm: Типоразмер {0}: {1}".format(i, symbol_name))
+                        # Создаем объект для хранения и типоразмера и его имени
+                        type_item = FamilyListItem(symbol_name, symbol)
+                        self.lstTypes.Items.Add(type_item)
+                
+                # Выбираем текущий типоразмер если есть
+                if self.current_type:
+                    for i in range(self.lstTypes.Items.Count):
+                        if self.lstTypes.Items[i].Tag == self.current_type:
+                            self.lstTypes.SelectedIndex = i
+                            add_log("TagFamilySelectionForm: Выбран текущий типоразмер с индексом {0}".format(i))
+                            break
+                # Иначе выбираем первый типоразмер
+                elif self.lstTypes.Items.Count > 0:
+                    self.lstTypes.SelectedIndex = 0
+                    add_log("TagFamilySelectionForm: Выбран первый типоразмер по умолчанию")
+            else:
+                add_log("TagFamilySelectionForm: В выбранном семействе нет типоразмеров")
+                MessageBox.Show("В выбранном семействе нет типоразмеров")
+                    
+        except Exception as e:
+            add_log("TagFamilySelectionForm: Ошибка при загрузке типоразмеров: {0}".format(str(e)))
+            MessageBox.Show("Ошибка при загрузке типоразмеров")
+    
+    def GetElementName(self, element):
+        """Получение корректного имени элемента"""
+        if not element:
+            return "Без имени"
+        
+        try:
+            # Для FamilySymbol (типоразмеров)
+            if isinstance(element, FamilySymbol):
+                # Пробуем получить имя типа
+                if hasattr(element, 'Name') and element.Name:
+                    return element.Name
+                
+                # Или через параметры
+                param = element.LookupParameter("Тип")
+                if param and param.HasValue:
+                    return param.AsString()
+                
+                param = element.LookupParameter("Type")
+                if param and param.HasValue:
+                    return param.AsString()
+            
+            # Для Family (семейств)
+            elif isinstance(element, Family):
+                if hasattr(element, 'Name') and element.Name:
+                    return element.Name
+            
+            # Общий случай
+            if hasattr(element, 'Name') and element.Name:
+                return element.Name
+                
+        except Exception as e:
+            add_log("TagFamilySelectionForm: Ошибка при получении имени элемента: {0}".format(str(e)))
+        
+        return "Без имени"
+    
+    def OnOKClick(self, sender, args):
+        """Обработка нажатия OK"""
+        if self.lstFamilies.SelectedItem and self.lstTypes.SelectedItem:
+            self.selected_family = self.lstFamilies.SelectedItem.Tag
+            self.selected_type = self.lstTypes.SelectedItem.Tag
+            add_log("TagFamilySelectionForm: Выбрано - Семейство: {0}, Тип: {1}".format(
+                self.GetElementName(self.selected_family), 
+                self.GetElementName(self.selected_type)))
+            self.DialogResult = DialogResult.OK
+            self.Close()
+        else:
+            add_log("TagFamilySelectionForm: Не выбрано семейство или типоразмер")
+            MessageBox.Show("Выберите семейство и типоразмер марки!")
+    
+    def OnCancelClick(self, sender, args):
+        """Обработка нажатия Отмена"""
+        add_log("TagFamilySelectionForm: Отмена выбора")
+        self.DialogResult = DialogResult.Cancel
+        self.Close()
+    
+    @property
+    def SelectedFamily(self):
+        return self.selected_family
+    
+    @property
+    def SelectedType(self):
+        return self.selected_type
+
 # Главное окно приложения
 class MainForm(Form):
     def __init__(self, doc, uidoc):
+        add_log("MainForm: Инициализация главного окна")
         self.doc = doc
         self.uidoc = uidoc
         self.settings = TagSettings()
         self.views_dict = {}  # Словарь для хранения соответствия названий и объектов View
         self.category_mapping = {}  # Словарь для хранения соответствия названий категорий и объектов Category
+        
         self.InitializeComponent()
         self.Load3DViewsWithDuctSystems()
     
     def InitializeComponent(self):
+        add_log("MainForm: Создание компонентов интерфейса")
         self.Text = "Расстановка марок на 3D видах"
         self.Size = Size(800, 600)
         self.StartPosition = FormStartPosition.CenterScreen
@@ -84,6 +327,7 @@ class MainForm(Form):
         self.SetupExecuteTab()
     
     def SetupViewsTab(self):
+        add_log("MainForm: Настройка вкладки выбора видов")
         # Список 3D видов
         self.lblViews = Label()
         self.lblViews.Text = "Выберите 3D виды с системами воздуховодов:"
@@ -101,11 +345,18 @@ class MainForm(Form):
         self.btnNext1.Location = Point(400, 350)
         self.btnNext1.Click += self.OnNext1Click
         
-        controls = [self.lblViews, self.lstViews, self.btnNext1]
+        # Кнопка показа логов
+        self.btnShowLogs = Button()
+        self.btnShowLogs.Text = "Показать логи"
+        self.btnShowLogs.Location = Point(10, 350)
+        self.btnShowLogs.Click += self.OnShowLogsClick
+        
+        controls = [self.lblViews, self.lstViews, self.btnNext1, self.btnShowLogs]
         for control in controls:
             self.tabViews.Controls.Add(control)
     
     def SetupCategoriesTab(self):
+        add_log("MainForm: Настройка вкладки выбора категорий")
         self.lblCategories = Label()
         self.lblCategories.Text = "Выберите категории элементов:"
         self.lblCategories.Location = Point(10, 10)
@@ -135,6 +386,7 @@ class MainForm(Form):
             self.tabCategories.Controls.Add(control)
     
     def SetupTagsTab(self):
+        add_log("MainForm: Настройка вкладки выбора марок")
         self.lblTags = Label()
         self.lblTags.Text = "Выберите семейства и типоразмеры марок для категорий:"
         self.lblTags.Location = Point(10, 10)
@@ -171,6 +423,7 @@ class MainForm(Form):
             self.tabTags.Controls.Add(control)
     
     def SetupSettingsTab(self):
+        add_log("MainForm: Настройка вкладки настроек")
         self.lblSettings = Label()
         self.lblSettings.Text = "Настройки размещения марок:"
         self.lblSettings.Location = Point(10, 10)
@@ -238,6 +491,7 @@ class MainForm(Form):
             self.tabSettings.Controls.Add(control)
     
     def SetupExecuteTab(self):
+        add_log("MainForm: Настройка вкладки выполнения")
         self.lblExecute = Label()
         self.lblExecute.Text = "Готово к выполнению:"
         self.lblExecute.Location = Point(10, 10)
@@ -270,55 +524,42 @@ class MainForm(Form):
     
     def Load3DViewsWithDuctSystems(self):
         """Загрузка 3D видов, на которых отображены системы воздуховодов"""
-        collector = FilteredElementCollector(self.doc)
-        views = collector.OfClass(View3D).WhereElementIsNotElementType().ToElements()
-        
-        self.lstViews.Items.Clear()
-        self.views_dict = {}
-        
-        target_categories = [
-            BuiltInCategory.OST_DuctAccessory,
-            BuiltInCategory.OST_FlexDuctCurves,
-            BuiltInCategory.OST_DuctInsulations,
-            BuiltInCategory.OST_PlaceHolderDucts,
-            BuiltInCategory.OST_DuctCurves,
-            BuiltInCategory.OST_DuctTerminal
-        ]
-        
-        for view in views:
-            if not view.IsTemplate and view.CanBePrinted:
-                # Проверяем, есть ли в виде элементы систем воздуховодов
-                has_duct_elements = False
-                
-                # Проверяем наличие элементов каждой категории
-                for category in target_categories:
-                    try:
-                        collector = FilteredElementCollector(self.doc, view.Id)
-                        elements = collector.OfCategory(category).WhereElementIsNotElementType().ToElements()
-                        if elements and any(elements):
-                            has_duct_elements = True
-                            break
-                    except:
-                        continue
-                
-                if has_duct_elements:
-                    # Создаем отображаемое имя
-                    display_name = "{} (ID: {})".format(view.Name, view.Id.IntegerValue)
-                    # Добавляем в список
-                    self.lstViews.Items.Add(display_name, False)
-                    # Сохраняем соответствие в словаре
-                    self.views_dict[display_name] = view
-        
-        # Если не найдено видов с воздуховодами, показываем все 3D виды
-        if self.lstViews.Items.Count == 0:
+        try:
+            add_log("Load3DViewsWithDuctSystems: Начало загрузки 3D видов")
+            collector = FilteredElementCollector(self.doc)
+            views = collector.OfClass(View3D).WhereElementIsNotElementType().ToElements()
+            
+            self.lstViews.Items.Clear()
+            self.views_dict = {}
+            
+            view_count = 0
             for view in views:
+                # Проверяем, что вид не является шаблоном и может быть напечатан
                 if not view.IsTemplate and view.CanBePrinted:
-                    display_name = "{} (ID: {})".format(view.Name, view.Id.IntegerValue)
+                    display_name = "{0} (ID: {1})".format(view.Name, view.Id.IntegerValue)
                     self.lstViews.Items.Add(display_name, False)
                     self.views_dict[display_name] = view
+                    view_count += 1
+            
+            add_log("Load3DViewsWithDuctSystems: Загружено 3D видов: {0}".format(view_count))
+            
+            # Если не найдено видов, показываем сообщение
+            if self.lstViews.Items.Count == 0:
+                add_log("Load3DViewsWithDuctSystems: Не найдено 3D видов в проекте")
+                MessageBox.Show("Не найдено 3D видов в проекте")
+            else:
+                # Автоматически выбираем первый вид для удобства
+                if self.lstViews.Items.Count > 0:
+                    self.lstViews.SetItemChecked(0, True)
+                    add_log("Load3DViewsWithDuctSystems: Автоматически выбран первый вид")
+                
+        except Exception as e:
+            add_log("Load3DViewsWithDuctSystems: Ошибка при загрузке видов: {0}".format(str(e)))
+            MessageBox.Show("Ошибка при загрузке видов: " + str(e))
     
     def OnNext1Click(self, sender, args):
         """Переход от выбора видов к выбору категорий"""
+        add_log("OnNext1Click: Переход к выбору категорий")
         # Сохраняем выбранные виды
         self.settings.selected_views = []
         for i in range(self.lstViews.Items.Count):
@@ -327,7 +568,10 @@ class MainForm(Form):
                 if display_name in self.views_dict:
                     self.settings.selected_views.append(self.views_dict[display_name])
         
+        add_log("OnNext1Click: Выбрано видов: {0}".format(len(self.settings.selected_views)))
+        
         if not self.settings.selected_views:
+            add_log("OnNext1Click: Не выбрано ни одного вида")
             MessageBox.Show("Выберите хотя бы один вид!")
             return
         
@@ -339,17 +583,19 @@ class MainForm(Form):
 
     def CollectUniqueCategories(self):
         """Сбор уникальных категорий из выбранных видов"""
+        add_log("CollectUniqueCategories: Сбор категорий")
         unique_categories = set()
         
         # Целевые категории для систем воздуховодов
         target_categories = [
-            BuiltInCategory.OST_DuctAccessory,
+            BuiltInCategory.OST_DuctCurves,
             BuiltInCategory.OST_FlexDuctCurves,
             BuiltInCategory.OST_DuctInsulations,
-            BuiltInCategory.OST_PlaceHolderDucts,
-            BuiltInCategory.OST_DuctCurves,
-            BuiltInCategory.OST_DuctTerminal
+            BuiltInCategory.OST_DuctTerminal,
+            BuiltInCategory.OST_DuctAccessory
         ]
+        
+        add_log("CollectUniqueCategories: Целевые категории: {0}".format(len(target_categories)))
         
         # Просто добавляем все целевые категории
         for category in target_categories:
@@ -357,14 +603,17 @@ class MainForm(Form):
                 cat_obj = Category.GetCategory(self.doc, category)
                 if cat_obj:
                     unique_categories.add(cat_obj)
+                    add_log("CollectUniqueCategories: Добавлена категория: {0}".format(self.GetCategoryDisplayName(cat_obj)))
             except Exception as e:
-                print("Ошибка при получении категории {}: {}".format(category, str(e)))
+                add_log("CollectUniqueCategories: Ошибка при получении категории {0}: {1}".format(category, str(e)))
         
         # Сохраняем уникальные категории
         self.settings.selected_categories = list(unique_categories)
+        add_log("CollectUniqueCategories: Всего собрано категорий: {0}".format(len(self.settings.selected_categories)))
     
     def PopulateCategoriesList(self):
         """Заполнение списка категорий"""
+        add_log("PopulateCategoriesList: Заполнение списка категорий")
         self.lstCategories.Items.Clear()
         self.category_mapping = {}  # Очищаем словарь соответствий
         
@@ -374,9 +623,10 @@ class MainForm(Form):
         for category in sorted_categories:
             # Отображаем корректное имя категории
             display_name = self.GetCategoryDisplayName(category)
-            self.lstCategories.Items.Add(display_name, False)
+            self.lstCategories.Items.Add(display_name, True)  # По умолчанию выбираем все
             # Сохраняем соответствие в словаре
             self.category_mapping[display_name] = category
+            add_log("PopulateCategoriesList: Добавлена категория в список: {0}".format(display_name))
     
     def GetCategoryDisplayName(self, category):
         """Получение корректного отображаемого имени категории"""
@@ -396,6 +646,7 @@ class MainForm(Form):
     
     def OnNext2Click(self, sender, args):
         """Переход от категорий к выбору марок"""
+        add_log("OnNext2Click: Переход к выбору марок")
         # Сохраняем выбранные категории
         self.settings.selected_categories = []
         for i in range(self.lstCategories.Items.Count):
@@ -404,7 +655,10 @@ class MainForm(Form):
                 if display_name in self.category_mapping:
                     self.settings.selected_categories.append(self.category_mapping[display_name])
         
+        add_log("OnNext2Click: Выбрано категорий: {0}".format(len(self.settings.selected_categories)))
+        
         if not self.settings.selected_categories:
+            add_log("OnNext2Click: Не выбрано ни одной категории")
             MessageBox.Show("Выберите хотя бы одну категорию!")
             return
         
@@ -414,6 +668,7 @@ class MainForm(Form):
     
     def PopulateTagFamilies(self):
         """Заполнение списка доступных семейств марок"""
+        add_log("PopulateTagFamilies: Заполнение списка марок")
         self.lstTagFamilies.Items.Clear()
         
         # Заполняем список для выбранных категорий
@@ -423,55 +678,57 @@ class MainForm(Form):
             item.Tag = category  # Сохраняем категорию в Tag
             
             # Ищем подходящие семейства марок
+            add_log("PopulateTagFamilies: Поиск марки для категории: {0}".format(cat_name))
             tag_family, tag_type = self.FindSuitableTagForCategory(category)
             
             if tag_family and tag_type:
-                family_name = getattr(tag_family, 'Name', 'Без имени')
-                type_name = getattr(tag_type, 'Name', 'Без имени')
+                family_name = self.GetElementName(tag_family)
+                type_name = self.GetElementName(tag_type)
                 item.SubItems.Add(family_name)
                 item.SubItems.Add(type_name)
                 self.settings.category_tag_families[category] = tag_family
                 self.settings.category_tag_types[category] = tag_type
+                add_log("PopulateTagFamilies: Найдена марка для {0}: {1} ({2})".format(cat_name, family_name, type_name))
             else:
                 item.SubItems.Add("Нет подходящих марок")
                 item.SubItems.Add("")
                 self.settings.category_tag_families[category] = None
                 self.settings.category_tag_types[category] = None
+                add_log("PopulateTagFamilies: Не найдено марок для категории: {0}".format(cat_name))
             
             self.lstTagFamilies.Items.Add(item)
     
     def FindSuitableTagForCategory(self, category):
         """Поиск подходящего семейства и типоразмера марки для категории"""
-        print("Поиск марки для категории: {}".format(self.GetCategoryDisplayName(category)))
+        add_log("FindSuitableTagForCategory: Поиск марки для категории: {0}".format(self.GetCategoryDisplayName(category)))
         
         # Определяем категорию марки в зависимости от категории элемента
         tag_category_id = self.GetTagCategoryForElementCategory(category)
         if not tag_category_id:
-            print("Не найдена категория марки")
+            add_log("FindSuitableTagForCategory: Не найдена категория марки для {0}".format(self.GetCategoryDisplayName(category)))
             return None, None
+        
+        add_log("FindSuitableTagForCategory: Категория марки ID: {0}".format(tag_category_id.IntegerValue))
         
         # Получаем все семейства марок нужной категории в проекте
         collector = FilteredElementCollector(self.doc)
         tag_families = collector.OfClass(Family).WhereElementIsNotElementType().ToElements()
         
-        print("Всего семейств в проекте: {}".format(len(list(tag_families))))
+        add_log("FindSuitableTagForCategory: Всего семейств в проекте: {0}".format(len(list(tag_families))))
         
         # Ищем семейства марки для данной категории
         for family in tag_families:
             if not family or not hasattr(family, 'FamilyCategory'):
                 continue
                 
-            print("Проверяем семейство: {} (категория: {})".format(
-                getattr(family, 'Name', 'Без имени'),
-                getattr(family.FamilyCategory, 'Name', 'Без категории') if family.FamilyCategory else 'Нет категории'
-            ))
+            add_log("FindSuitableTagForCategory: Проверяем семейство: {0}".format(self.GetElementName(family)))
                 
             if family.FamilyCategory and family.FamilyCategory.Id == tag_category_id:
-                print("Нашли подходящее семейство: {}".format(getattr(family, 'Name', 'Без имени')))
+                add_log("FindSuitableTagForCategory: Нашли подходящее семейство: {0}".format(self.GetElementName(family)))
                 
                 # Получаем все доступные типоразмеры
                 symbol_ids = family.GetFamilySymbolIds()
-                print("Типоразмеров в семействе: {}".format(symbol_ids.Count if symbol_ids else 0))
+                add_log("FindSuitableTagForCategory: Типоразмеров в семействе: {0}".format(symbol_ids.Count if symbol_ids else 0))
                 
                 if symbol_ids and symbol_ids.Count > 0:
                     # Преобразуем HashSet в список для безопасного доступа
@@ -481,14 +738,14 @@ class MainForm(Form):
                         for symbol_id in symbol_id_list:
                             tag_type = self.doc.GetElement(symbol_id)
                             if tag_type and tag_type.IsActive:
-                                print("Найден активный типоразмер: {}".format(getattr(tag_type, 'Name', 'Без имени')))
+                                add_log("FindSuitableTagForCategory: Найден активный типоразмер: {0}".format(self.GetElementName(tag_type)))
                                 return family, tag_type
                         # Если нет активных, берем первый доступный
                         tag_type = self.doc.GetElement(symbol_id_list[0])
-                        print("Используем первый типоразмер: {}".format(getattr(tag_type, 'Name', 'Без имени')))
+                        add_log("FindSuitableTagForCategory: Используем первый типоразмер: {0}".format(self.GetElementName(tag_type)))
                         return family, tag_type
         
-        print("Не найдено подходящих марок")
+        add_log("FindSuitableTagForCategory: Не найдено подходящих марок")
         return None, None
     
     def GetTagCategoryForElementCategory(self, element_category):
@@ -500,7 +757,6 @@ class MainForm(Form):
         category_mapping = {
             BuiltInCategory.OST_DuctCurves: BuiltInCategory.OST_DuctTags,
             BuiltInCategory.OST_FlexDuctCurves: BuiltInCategory.OST_DuctTags,
-            BuiltInCategory.OST_PlaceHolderDucts: BuiltInCategory.OST_DuctTags,
             BuiltInCategory.OST_DuctTerminal: BuiltInCategory.OST_DuctTerminalTags,
             BuiltInCategory.OST_DuctAccessory: BuiltInCategory.OST_DuctAccessoryTags,
             BuiltInCategory.OST_DuctInsulations: BuiltInCategory.OST_DuctInsulationsTags
@@ -510,24 +766,64 @@ class MainForm(Form):
         try:
             if hasattr(element_category, 'Id') and element_category.Id.IntegerValue < 0:
                 element_builtin_cat = BuiltInCategory(element_category.Id.IntegerValue)
+                add_log("GetTagCategoryForElementCategory: Категория элемента: {0}".format(element_builtin_cat))
                 if element_builtin_cat in category_mapping:
                     tag_builtin_cat = category_mapping[element_builtin_cat]
                     tag_category = Category.GetCategory(self.doc, tag_builtin_cat)
                     if tag_category:
+                        add_log("GetTagCategoryForElementCategory: Найдена категория марки: {0}".format(tag_builtin_cat))
                         return tag_category.Id
         except Exception as e:
-            print("Ошибка при получении категории марки: {}".format(str(e)))
+            add_log("GetTagCategoryForElementCategory: Ошибка при получении категории марки: {0}".format(str(e)))
         
+        add_log("GetTagCategoryForElementCategory: Категория марки не найдена")
         return None
+    
+    def GetElementName(self, element):
+        """Получение корректного имени элемента"""
+        if not element:
+            return "Без имени"
+        
+        try:
+            # Для FamilySymbol (типоразмеров)
+            if isinstance(element, FamilySymbol):
+                # Пробуем получить имя типа
+                if hasattr(element, 'Name') and element.Name:
+                    return element.Name
+                
+                # Или через параметры
+                param = element.LookupParameter("Тип")
+                if param and param.HasValue:
+                    return param.AsString()
+                
+                param = element.LookupParameter("Type")
+                if param and param.HasValue:
+                    return param.AsString()
+            
+            # Для Family (семейств)
+            elif isinstance(element, Family):
+                if hasattr(element, 'Name') and element.Name:
+                    return element.Name
+            
+            # Общий случай
+            if hasattr(element, 'Name') and element.Name:
+                return element.Name
+                
+        except Exception as e:
+            add_log("GetElementName: Ошибка при получении имени элемента: {0}".format(str(e)))
+        
+        return "Без имени"
     
     def OnTagFamilyDoubleClick(self, sender, args):
         """Обработка двойного клика для изменения семейства марки"""
         if self.lstTagFamilies.SelectedItems.Count > 0:
             selected_item = self.lstTagFamilies.SelectedItems[0]
             category = selected_item.Tag
+            add_log("OnTagFamilyDoubleClick: Двойной клик по категории: {0}".format(self.GetCategoryDisplayName(category)))
             
             # Получаем все доступные семейства марок для этой категории
             available_families = self.GetAvailableTagFamiliesForCategory(category)
+            add_log("OnTagFamilyDoubleClick: Доступно семейств марок: {0}".format(len(available_families)))
             
             if available_families:
                 # Создаем диалог для выбора семейства и типоразмера
@@ -538,24 +834,32 @@ class MainForm(Form):
                 
                 if result == DialogResult.OK and form.SelectedFamily and form.SelectedType:
                     # Обновляем выбранное семейство и типоразмер
-                    family_name = getattr(form.SelectedFamily, 'Name', 'Без имени')
-                    type_name = getattr(form.SelectedType, 'Name', 'Без имени')
+                    family_name = self.GetElementName(form.SelectedFamily)
+                    type_name = self.GetElementName(form.SelectedType)
                     selected_item.SubItems[1].Text = family_name
                     selected_item.SubItems[2].Text = type_name
                     self.settings.category_tag_families[category] = form.SelectedFamily
                     self.settings.category_tag_types[category] = form.SelectedType
+                    add_log("OnTagFamilyDoubleClick: Обновлена марка для {0}: {1} ({2})".format(
+                        self.GetCategoryDisplayName(category), family_name, type_name))
             else:
+                add_log("OnTagFamilyDoubleClick: Нет доступных семейств марок для {0}".format(self.GetCategoryDisplayName(category)))
                 MessageBox.Show("Нет доступных семейств марок для этой категории")
-    
+
     def GetAvailableTagFamiliesForCategory(self, category):
         """Получение всех доступных семейств марок для категории"""
+        add_log("GetAvailableTagFamiliesForCategory: Поиск марок для {0}".format(self.GetCategoryDisplayName(category)))
         # Определяем категорию марки в зависимости от категории элемента
         tag_category_id = self.GetTagCategoryForElementCategory(category)
         if not tag_category_id:
-            print("Не найдена категория марки для: {}".format(self.GetCategoryDisplayName(category)))
+            add_log("GetAvailableTagFamiliesForCategory: Не найдена категория марки для: {0}".format(self.GetCategoryDisplayName(category)))
             return []
         
-        print("Ищем марки категории: {}".format(Category.GetCategory(self.doc, BuiltInCategory(tag_category_id.IntegerValue)).Name))
+        try:
+            tag_category = Category.GetCategory(self.doc, BuiltInCategory(tag_category_id.IntegerValue))
+            add_log("GetAvailableTagFamiliesForCategory: Ищем марки категории: {0}".format(tag_category.Name if tag_category else 'Unknown'))
+        except:
+            add_log("GetAvailableTagFamiliesForCategory: Ищем марки категории ID: {0}".format(tag_category_id.IntegerValue))
         
         collector = FilteredElementCollector(self.doc)
         tag_families = collector.OfClass(Family).WhereElementIsNotElementType().ToElements()
@@ -570,22 +874,23 @@ class MainForm(Form):
                 available_families.append(family)
                 # Проверим сразу есть ли типоразмеры
                 symbol_ids = family.GetFamilySymbolIds()
-                print("Семейство: {} (типоразмеров: {})".format(
-                    getattr(family, 'Name', 'Без имени'),
-                    symbol_ids.Count if symbol_ids else 0
-                ))
+                add_log("GetAvailableTagFamiliesForCategory: Семейство: {0} (типоразмеров: {1})".format(
+                    self.GetElementName(family), 
+                    symbol_ids.Count if symbol_ids else 0))
         
-        print("Итого найдено семейств марок для категории {}: {}".format(
+        add_log("GetAvailableTagFamiliesForCategory: Итого найдено семейств марок для категории {0}: {1}".format(
             self.GetCategoryDisplayName(category), len(available_families)))
         
         return available_families
     
     def OnNext3Click(self, sender, args):
         """Переход к настройкам"""
+        add_log("OnNext3Click: Переход к настройкам")
         self.tabControl.SelectedTab = self.tabSettings
     
     def OnNext4Click(self, sender, args):
         """Переход к выполнению"""
+        add_log("OnNext4Click: Переход к выполнению")
         # Сохраняем настройки
         try:
             self.settings.offset_x = float(self.txtOffsetX.Text)
@@ -595,7 +900,10 @@ class MainForm(Form):
             else:
                 self.settings.orientation = TagOrientation.Vertical
             self.settings.use_leader = self.chkUseLeader.Checked
+            add_log("OnNext4Click: Настройки сохранены - X:{0}, Y:{1}, ориентация:{2}, выноска:{3}".format(
+                self.settings.offset_x, self.settings.offset_y, self.settings.orientation, self.settings.use_leader))
         except Exception as e:
+            add_log("OnNext4Click: Ошибка сохранения настроек: {0}".format(str(e)))
             MessageBox.Show("Проверьте правильность введенных значений! Ошибка: " + str(e))
             return
         
@@ -607,17 +915,18 @@ class MainForm(Form):
     
     def GenerateSummary(self):
         """Генерация сводки перед выполнением"""
+        add_log("GenerateSummary: Формирование сводки")
         summary = "СВОДКА ПЕРЕД ВЫПОЛНЕНИЕМ:\n\n"
-        summary += "Выбрано видов: {}\n".format(len(self.settings.selected_views))
-        summary += "Выбрано категорий: {}\n".format(len(self.settings.selected_categories))
-        summary += "Смещение: X={} мм, Y={} мм\n".format(self.settings.offset_x, self.settings.offset_y)
+        summary += "Выбрано видов: {0}\n".format(len(self.settings.selected_views))
+        summary += "Выбрано категорий: {0}\n".format(len(self.settings.selected_categories))
+        summary += "Смещение: X={0} мм, Y={1} мм\n".format(self.settings.offset_x, self.settings.offset_y)
         
         if self.settings.orientation == TagOrientation.Horizontal:
             orientation_text = "Горизонтальная"
         else:
             orientation_text = "Вертикальная"
-        summary += "Ориентация: {}\n".format(orientation_text)
-        summary += "Выноска: {}\n\n".format("Да" if self.settings.use_leader else "Нет")
+        summary += "Ориентация: {0}\n".format(orientation_text)
+        summary += "Выноска: {0}\n\n".format("Да" if self.settings.use_leader else "Нет")
         
         summary += "Детали по категориям:\n"
         for category in self.settings.selected_categories:
@@ -626,322 +935,247 @@ class MainForm(Form):
             cat_name = self.GetCategoryDisplayName(category)
             
             if tag_family and tag_type:
-                family_name = getattr(tag_family, 'Name', 'Без имени')
-                type_name = getattr(tag_type, 'Name', 'Без имени')
-                summary += "- {}: {} ({})\n".format(cat_name, family_name, type_name)
+                family_name = self.GetElementName(tag_family)
+                type_name = self.GetElementName(tag_type)
+                summary += "- {0}: {1} ({2})\n".format(cat_name, family_name, type_name)
             else:
-                summary += "- {}: НЕТ МАРКИ\n".format(cat_name)
+                summary += "- {0}: НЕТ МАРКИ\n".format(cat_name)
         
+        add_log("GenerateSummary: Сводка сформирована")
         return summary
     
     def OnExecuteClick(self, sender, args):
         """Выполнение расстановки марок"""
+        add_log("OnExecuteClick: Начало выполнения расстановки марок")
         errors = []
         success_count = 0
+        
+        add_log("OnExecuteClick: Выбрано видов: {0}".format(len(self.settings.selected_views)))
+        add_log("OnExecuteClick: Выбрано категорий: {0}".format(len(self.settings.selected_categories)))
         
         # Начинаем транзакцию
         trans = Transaction(self.doc, "Расстановка марок")
         trans.Start()
+        add_log("OnExecuteClick: Транзакция начата")
         
         try:
             for view in self.settings.selected_views:
+                add_log("OnExecuteClick: Обработка вида: {0} (ID: {1})".format(view.Name, view.Id))
+                
                 if not isinstance(view, View3D):
-                    errors.append("Вид '{}' не является 3D видом".format(view.Name))
+                    error_msg = "Вид '{0}' не является 3D видом".format(view.Name)
+                    add_log("OnExecuteClick: {0}".format(error_msg))
+                    errors.append(error_msg)
                     continue
                 
-                # Получаем элементы вида через FilteredElementCollector
-                collector = FilteredElementCollector(self.doc, view.Id)
-                elements = collector.WhereElementIsNotElementType().ToElements()
-                
-                for element in elements:
-                    if not element or not element.Category:
-                        continue
+                # Получаем элементы по категориям
+                for category in self.settings.selected_categories:
+                    cat_name = self.GetCategoryDisplayName(category)
+                    add_log("OnExecuteClick: Обработка категории: {0}".format(cat_name))
                     
-                    # Проверяем, подходит ли элемент под выбранные критерии
-                    category = element.Category
-                    if category not in self.settings.selected_categories:
-                        continue
+                    collector = FilteredElementCollector(self.doc, view.Id)
+                    elements = collector.OfCategoryId(category.Id).WhereElementIsNotElementType().ToElements()
                     
-                    # Проверяем, есть ли уже марка у элемента на этом виде
-                    if self.HasExistingTag(element, view):
-                        continue
+                    element_list = list(elements)
+                    add_log("OnExecuteClick: Найдено элементов категории {0}: {1}".format(cat_name, len(element_list)))
                     
-                    # Получаем семейство и типоразмер марки для категории
-                    tag_family = self.settings.category_tag_families.get(category)
-                    tag_type = self.settings.category_tag_types.get(category)
-                    
-                    if not tag_family or not tag_type:
-                        cat_name = self.GetCategoryDisplayName(category)
-                        errors.append("Нет марки для категории {}".format(cat_name))
-                        continue
-                    
-                    # Создаем марку
-                    if self.CreateTag(element, view, tag_type):
-                        success_count += 1
-                    else:
-                        errors.append("Не удалось создать марку для {}".format(element.Id))
+                    for element in element_list:
+                        if not element:
+                            continue
+                        
+                        add_log("OnExecuteClick: Обработка элемента ID: {0}, Категория: {1}".format(element.Id, element.Category.Name))
+                        
+                        # Проверяем, есть ли уже марка у элемента на этом виде
+                        if self.HasExistingTag(element, view):
+                            add_log("OnExecuteClick: Марка уже существует для элемента {0}".format(element.Id))
+                            continue
+                        
+                        # Получаем семейство и типоразмер марки для категории
+                        tag_family = self.settings.category_tag_families.get(category)
+                        tag_type = self.settings.category_tag_types.get(category)
+                        
+                        if not tag_family or not tag_type:
+                            error_msg = "Нет марки для категории {0}".format(cat_name)
+                            add_log("OnExecuteClick: {0}".format(error_msg))
+                            errors.append(error_msg)
+                            continue
+                        
+                        add_log("OnExecuteClick: Создание марки для элемента {0}".format(element.Id))
+                        # Создаем марку - ИСПРАВЛЕННЫЙ ВАРИАНТ
+                        if self.CreateTagImproved(element, view, tag_type):
+                            success_count += 1
+                            add_log("OnExecuteClick: Успешно создана марка для элемента {0}".format(element.Id))
+                        else:
+                            error_msg = "Не удалось создать марку для {0}".format(element.Id)
+                            add_log("OnExecuteClick: {0}".format(error_msg))
+                            errors.append(error_msg)
             
             trans.Commit()
+            add_log("OnExecuteClick: Транзакция завершена успешно. Создано марок: {0}".format(success_count))
             
         except Exception as e:
             trans.RollBack()
-            errors.append("Ошибка выполнения: {}".format(str(e)))
+            error_msg = "Ошибка выполнения: {0}".format(str(e))
+            add_log("OnExecuteClick: {0}".format(error_msg))
+            errors.append(error_msg)
         finally:
             trans.Dispose()
+            add_log("OnExecuteClick: Транзакция disposed")
         
         # Показываем результаты
-        result_msg = "Успешно расставлено марок: {}\n".format(success_count)
+        result_msg = "Успешно расставлено марок: {0}\n".format(success_count)
         if errors:
-            result_msg += "\nОшибки ({}):\n".format(len(errors)) + "\n".join(errors[:10])
+            result_msg += "\nОшибки ({0}):\n".format(len(errors)) + "\n".join(errors[:10])
             if len(errors) > 10:
-                result_msg += "\n... и еще {} ошибок".format(len(errors) - 10)
+                result_msg += "\n... и еще {0} ошибок".format(len(errors) - 10)
         
+        add_log("OnExecuteClick: Результат: {0}".format(result_msg))
         MessageBox.Show(result_msg, "Результат выполнения")
+        
+        # Показываем логи после выполнения
+        show_logs()
+        
         self.Close()
     
-    def HasExistingTag(self, element, view):
-        """Проверка существующей марки у элемента на виде"""
-        collector = FilteredElementCollector(self.doc, view.Id)
-        tags = collector.OfClass(IndependentTag).ToElements()
-        
-        for tag in tags:
-            if tag.TaggedLocalElementId == element.Id:
-                return True
-        return False
-    
-    def CreateTag(self, element, view, tag_type):
-        """Создание марки для элемента"""
+    def CreateTagImproved(self, element, view, tag_type):
+        """Улучшенное создание марки на основе кода из Dynamo"""
         try:
+            add_log("CreateTagImproved: Создание марки для элемента {0}".format(element.Id))
+            
             # Получаем точку для размещения марки
             bbox = element.get_BoundingBox(view)
             if not bbox:
+                add_log("CreateTagImproved: Нет bounding box у элемента {0}".format(element.Id))
                 return False
             
             center = (bbox.Min + bbox.Max) / 2
-            # конвертация мм в футы
+            
+            # Конвертация мм в футы (1 фут = 304.8 мм)
             offset_x_feet = self.settings.offset_x / 304.8
             offset_y_feet = self.settings.offset_y / 304.8
             
+            # Создаем точку смещения от центра элемента
             tag_point = XYZ(
                 center.X + offset_x_feet,
                 center.Y + offset_y_feet,
                 center.Z
             )
             
-            # Создаем марку с указанным типоразмером
+            add_log("CreateTagImproved: Точка размещения: {0}".format(tag_point))
+            
+            # Создаем ссылку на элемент - КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ
+            element_ref = Reference(element)
+            add_log("CreateTagImproved: Ссылка создана")
+            
+            # Используем правильный TagMode как в Dynamo
+            tag_mode = TagMode.TM_ADDBY_CATEGORY
+            
+            # Создаем марку - ИСПРАВЛЕННЫЙ ВЫЗОВ
             tag = IndependentTag.Create(
                 self.doc,
                 view.Id,
-                Reference(element),
+                element_ref,
                 self.settings.use_leader,
+                tag_mode,
                 self.settings.orientation,
                 tag_point
             )
             
             if tag:
+                add_log("CreateTagImproved: Марка создана успешно, ID: {0}".format(tag.Id))
+                
                 # Устанавливаем нужный типоразмер
-                tag.ChangeTypeId(tag_type.Id)
+                if tag_type:
+                    try:
+                        tag.ChangeTypeId(tag_type.Id)
+                        add_log("CreateTagImproved: Типоразмер установлен: {0}".format(self.GetElementName(tag_type)))
+                    except Exception as e:
+                        add_log("CreateTagImproved: Ошибка при установке типоразмера: {0}".format(str(e)))
+                
                 return True
-            
-            return False
-            
+            else:
+                add_log("CreateTagImproved: Не удалось создать марку")
+                return False
+                
         except Exception as e:
-            print("Ошибка создания марки: {}".format(str(e)))
+            add_log("CreateTagImproved: Ошибка создания марки: {0}".format(str(e)))
             return False
+    
+    def HasExistingTag(self, element, view):
+        """Проверка существующей марки у элемента на виде"""
+        try:
+            collector = FilteredElementCollector(self.doc, view.Id)
+            tags = collector.OfClass(IndependentTag).ToElements()
+            
+            tag_count = 0
+            for tag in tags:
+                tag_count += 1
+                try:
+                    # Проверяем все привязанные элементы
+                    tagged_elements = tag.GetTaggedLocalElements()
+                    for tagged_elem in tagged_elements:
+                        if tagged_elem.Id == element.Id:
+                            add_log("HasExistingTag: Найдена существующая марка для элемента {0}".format(element.Id))
+                            return True
+                except:
+                    # Альтернативный способ для старых версий Revit
+                    if hasattr(tag, 'TaggedLocalElementId'):
+                        if tag.TaggedLocalElementId == element.Id:
+                            add_log("HasExistingTag: Найдена существующая марка для элемента {0} (старый метод)".format(element.Id))
+                            return True
+            add_log("HasExistingTag: Проверено {0} марок, существующих марок не найдено для элемента {1}".format(tag_count, element.Id))
+            return False
+        except Exception as e:
+            add_log("HasExistingTag: Ошибка при проверке существующих марок: {0}".format(str(e)))
+            return False
+    
+    def OnShowLogsClick(self, sender, args):
+        """Показать логи"""
+        show_logs()
     
     # Методы навигации назад
     def OnBack1Click(self, sender, args):
+        add_log("OnBack1Click: Возврат к выбору видов")
         self.tabControl.SelectedTab = self.tabViews
     
     def OnBack2Click(self, sender, args):
+        add_log("OnBack2Click: Возврат к выбору категорий")
         self.tabControl.SelectedTab = self.tabCategories
     
     def OnBack3Click(self, sender, args):
+        add_log("OnBack3Click: Возврат к выбору марок")
         self.tabControl.SelectedTab = self.tabTags
     
     def OnBack4Click(self, sender, args):
+        add_log("OnBack4Click: Возврат к настройкам")
         self.tabControl.SelectedTab = self.tabSettings
-
-# Форма для выбора семейства и типоразмера марки
-class TagFamilySelectionForm(Form):
-    def __init__(self, doc, available_families, current_family, current_type):
-        self.doc = doc
-        self.available_families = available_families
-        self.current_family = current_family
-        self.current_type = current_type
-        self.selected_family = None
-        self.selected_type = None
-        
-        self.InitializeComponent()
-        self.PopulateFamiliesList()
-    
-    def InitializeComponent(self):
-        self.Text = "Выбор семейства и типоразмера марки"
-        self.Size = Size(500, 400)
-        self.StartPosition = FormStartPosition.CenterParent
-        self.FormBorderStyle = FormBorderStyle.FixedDialog
-        self.MaximizeBox = False
-        self.MinimizeBox = False
-        
-        # Метка для семейств
-        self.lblFamilies = Label()
-        self.lblFamilies.Text = "Выберите семейство марки:"
-        self.lblFamilies.Location = Point(10, 10)
-        self.lblFamilies.Size = Size(300, 20)
-        
-        # Список семейств
-        self.lstFamilies = ListBox()
-        self.lstFamilies.Location = Point(10, 40)
-        self.lstFamilies.Size = Size(200, 200)
-        self.lstFamilies.SelectedIndexChanged += self.OnFamilySelected
-        
-        # Метка для типоразмеров
-        self.lblTypes = Label()
-        self.lblTypes.Text = "Выберите типоразмер:"
-        self.lblTypes.Location = Point(220, 10)
-        self.lblTypes.Size = Size(300, 20)
-        
-        # Список типоразмеров
-        self.lstTypes = ListBox()
-        self.lstTypes.Location = Point(220, 40)
-        self.lstTypes.Size = Size(200, 200)
-        
-        # Кнопка OK
-        self.btnOK = Button()
-        self.btnOK.Text = "OK"
-        self.btnOK.Location = Point(300, 250)
-        self.btnOK.Size = Size(75, 25)
-        self.btnOK.Click += self.OnOKClick
-        
-        # Кнопка Отмена
-        self.btnCancel = Button()
-        self.btnCancel.Text = "Отмена"
-        self.btnCancel.Location = Point(380, 250)
-        self.btnCancel.Size = Size(75, 25)
-        self.btnCancel.Click += self.OnCancelClick
-        
-        controls = [self.lblFamilies, self.lstFamilies, self.lblTypes, self.lstTypes, self.btnOK, self.btnCancel]
-        for control in controls:
-            self.Controls.Add(control)
-    
-    def PopulateFamiliesList(self):
-        """Заполнение списка семейств"""
-        self.lstFamilies.Items.Clear()
-        
-        for family in self.available_families:
-            if family and hasattr(family, 'Name'):
-                family_name = getattr(family, 'Name', 'Без имени')
-                # Создаем объект для хранения и семейства и его имени
-                item = FamilyListItem(family_name, family)
-                self.lstFamilies.Items.Add(item)
-        
-        # Выбираем первое семейство по умолчанию
-        if self.lstFamilies.Items.Count > 0:
-            self.lstFamilies.SelectedIndex = 0
-    
-    def OnFamilySelected(self, sender, args):
-        """Обработка выбора семейства"""
-        if self.lstFamilies.SelectedItem:
-            selected_item = self.lstFamilies.SelectedItem
-            selected_family = selected_item.Tag
-            self.PopulateTypesList(selected_family)
-    
-    def PopulateTypesList(self, family):
-        """Заполнение списка типоразмеров для выбранного семейства"""
-        self.lstTypes.Items.Clear()
-        
-        try:
-            # Получаем все типоразмеры выбранного семейства
-            symbol_ids = family.GetFamilySymbolIds()
-            
-            print("Найдено типоразмеров в семействе {}: {}".format(
-                getattr(family, 'Name', 'Без имени'), 
-                symbol_ids.Count if symbol_ids else 0))
-            
-            if symbol_ids and symbol_ids.Count > 0:
-                symbol_id_list = list(symbol_ids)
-                for symbol_id in symbol_id_list:
-                    symbol = self.doc.GetElement(symbol_id)
-                    if symbol:
-                        symbol_name = getattr(symbol, 'Name', 'Без имени')
-                        print(" - Типоразмер: {}".format(symbol_name))
-                        # Создаем объект для хранения и типоразмера и его имени
-                        type_item = FamilyListItem(symbol_name, symbol)
-                        self.lstTypes.Items.Add(type_item)
-                
-                # Выбираем первый типоразмер
-                if self.lstTypes.Items.Count > 0:
-                    self.lstTypes.SelectedIndex = 0
-                else:
-                    print("Типоразмеры найдены, но не удалось загрузить их имена")
-            else:
-                print("Семейство не содержит типоразмеров")
-                
-                # Альтернативный способ - попробовать получить типоразмеры через FamilySymbol
-                collector = FilteredElementCollector(self.doc)
-                symbols = collector.OfClass(FamilySymbol).WhereElementIsNotElementType().ToElements()
-                
-                family_symbols = []
-                for symbol in symbols:
-                    if symbol.Family and symbol.Family.Id == family.Id:
-                        family_symbols.append(symbol)
-                
-                print("Альтернативный поиск: найдено типоразмеров: {}".format(len(family_symbols)))
-                
-                for symbol in family_symbols:
-                    symbol_name = getattr(symbol, 'Name', 'Без имени')
-                    print(" - Типоразмер (альт.): {}".format(symbol_name))
-                    type_item = FamilyListItem(symbol_name, symbol)
-                    self.lstTypes.Items.Add(type_item)
-                
-                if self.lstTypes.Items.Count > 0:
-                    self.lstTypes.SelectedIndex = 0
-                    
-        except Exception as e:
-            print("Ошибка при загрузке типоразмеров: " + str(e))
-            # Показываем сообщение только если действительно нет типоразмеров
-            if self.lstTypes.Items.Count == 0:
-                MessageBox.Show("В выбранном семействе нет доступных типоразмеров!")
-    
-    def OnOKClick(self, sender, args):
-        """Обработка нажатия OK"""
-        if self.lstFamilies.SelectedItem and self.lstTypes.SelectedItem:
-            self.selected_family = self.lstFamilies.SelectedItem.Tag
-            self.selected_type = self.lstTypes.SelectedItem.Tag
-            self.DialogResult = DialogResult.OK
-            self.Close()
-        else:
-            MessageBox.Show("Выберите семейство и типоразмер марки!")
-    
-    def OnCancelClick(self, sender, args):
-        """Обработка нажатия Отмена"""
-        self.DialogResult = DialogResult.Cancel
-        self.Close()
-    
-    @property
-    def SelectedFamily(self):
-        return self.selected_family
-    
-    @property
-    def SelectedType(self):
-        return self.selected_type
-
-# Вспомогательный класс для отображения в ListBox
-class FamilyListItem(object):
-    def __init__(self, display_name, tag):
-        self.display_name = display_name
-        self.Tag = tag
-    
-    def __str__(self):
-        return self.display_name
 
 # Основная функция
 def main():
-    doc = __revit__.ActiveUIDocument.Document
-    uidoc = __revit__.ActiveUIDocument
-    
-    form = MainForm(doc, uidoc)
-    Application.Run(form)
+    try:
+        add_log("=== ЗАПУСК ПРИЛОЖЕНИЯ ===")
+        # Получаем документ Revit
+        doc = __revit__.ActiveUIDocument.Document
+        uidoc = __revit__.ActiveUIDocument
+        
+        add_log("main: Документ получен: {0}".format(doc.Title if doc else 'None'))
+        
+        # Проверяем, что документ доступен
+        if doc and uidoc:
+            add_log("main: Создание главной формы")
+            form = MainForm(doc, uidoc)
+            add_log("main: Запуск приложения")
+            Application.Run(form)
+            add_log("main: Приложение завершено")
+        else:
+            error_msg = "Не удалось получить доступ к документу Revit"
+            add_log("main: {0}".format(error_msg))
+            MessageBox.Show(error_msg)
+    except Exception as e:
+        error_msg = "Критическая ошибка при запуске: {0}".format(str(e))
+        add_log("main: {0}".format(error_msg))
+        MessageBox.Show(error_msg)
+        show_logs()
 
 if __name__ == "__main__":
     main()
