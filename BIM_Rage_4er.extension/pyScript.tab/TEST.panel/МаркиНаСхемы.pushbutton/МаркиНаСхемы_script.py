@@ -170,7 +170,7 @@ class TagFamilySelectionForm(Form):
         """Заполнение списка типоразмеров для выбранного семейства"""
         add_log("TagFamilySelectionForm: Загрузка типоразмеров для семейства {0}".format(self.GetElementName(family)))
         self.lstTypes.Items.Clear()
-    
+
         try:
             # Получаем все типоразмеры выбранного семейства
             symbol_ids = family.GetFamilySymbolIds()
@@ -184,9 +184,10 @@ class TagFamilySelectionForm(Form):
                         # Получаем имя типоразмера
                         symbol_name = self.GetElementName(symbol)
                     
-                        # Добавляем информацию о активности
+                        # Добавляем информацию о активности и ID
                         status = " (активный)" if symbol.IsActive else " (не активный)"
-                        display_name = symbol_name + status
+                        id_info = " [ID:{0}]".format(symbol.Id.IntegerValue)
+                        display_name = "{0}{1}{2}".format(symbol_name, status, id_info)
                     
                         add_log("TagFamilySelectionForm: Типоразмер {0}: {1}".format(i, display_name))
                         # Создаем объект для хранения и типоразмера и его имени
@@ -202,13 +203,15 @@ class TagFamilySelectionForm(Form):
                             break
                 # Иначе выбираем первый активный типоразмер
                 else:
+                    active_found = False
                     for i in range(self.lstTypes.Items.Count):
                         if self.lstTypes.Items[i].Tag.IsActive:
                             self.lstTypes.SelectedIndex = i
                             add_log("TagFamilySelectionForm: Выбран первый активный типоразмер с индексом {0}".format(i))
+                            active_found = True
                             break
                     # Если нет активных, выбираем первый
-                    if self.lstTypes.SelectedIndex == -1 and self.lstTypes.Items.Count > 0:
+                    if not active_found and self.lstTypes.Items.Count > 0:
                         self.lstTypes.SelectedIndex = 0
                         add_log("TagFamilySelectionForm: Выбран первый типоразмер по умолчанию")
             else:
@@ -227,54 +230,74 @@ class TagFamilySelectionForm(Form):
         try:
             # Для FamilySymbol (типоразмеров)
             if isinstance(element, FamilySymbol):
-                # Пробуем получить имя через FamilyName + Name
-                family_name = ""
-                type_name = ""
-                
-                # Получаем имя семейства
-                if hasattr(element, 'FamilyName') and element.FamilyName:
-                    family_name = element.FamilyName
-                elif element.Family and hasattr(element.Family, 'Name'):
-                    family_name = element.Family.Name
-                
-                # Получаем имя типа
+                # Основной способ - через свойство Name
                 if hasattr(element, 'Name') and element.Name:
-                    type_name = element.Name
+                    name = element.Name
+                    # Проверяем, не является ли это IronPython именем
+                    if name and not name.startswith('IronPython'):
+                        return name
                 
-                # Комбинируем для лучшего отображения
-                if family_name and type_name:
-                    return "{0} - {1}".format(family_name, type_name)
-                elif type_name:
-                    return type_name
-                elif family_name:
-                    return family_name
+                # Альтернативный способ - через Family и Name
+                if hasattr(element, 'Family') and element.Family:
+                    family_name = ""
+                    if hasattr(element.Family, 'Name') and element.Family.Name:
+                        family_name = element.Family.Name
+                    
+                    # Пробуем получить имя типа через параметры
+                    type_name = ""
+                    
+                    # Параметр "Тип"
+                    param = element.LookupParameter("Тип")
+                    if param and param.HasValue:
+                        type_name = param.AsString()
+                    
+                    # Параметр "Type Name"
+                    if not type_name:
+                        param = element.LookupParameter("Type Name")
+                        if param and param.HasValue:
+                            type_name = param.AsString()
+                    
+                    # Параметр "Имя типа"
+                    if not type_name:
+                        param = element.LookupParameter("Имя типа")
+                        if param and param.HasValue:
+                            type_name = param.AsString()
+                    
+                    # Комбинируем для лучшего отображения
+                    if family_name and type_name:
+                        return "{0} - {1}".format(family_name, type_name)
+                    elif type_name:
+                        return type_name
+                    elif family_name:
+                        return family_name
                 
-                # Пробуем через параметры как запасной вариант
-                param = element.LookupParameter("Тип")
-                if param and param.HasValue:
-                    return param.AsString()
-                
-                param = element.LookupParameter("Type Name")
-                if param and param.HasValue:
-                    return param.AsString()
-                
-                param = element.LookupParameter("Имя типа")
-                if param and param.HasValue:
-                    return param.AsString()
+                # Последняя попытка - через ElementId
+                return "Типоразмер {0}".format(element.Id.IntegerValue)
             
             # Для Family (семейств)
             elif isinstance(element, Family):
                 if hasattr(element, 'Name') and element.Name:
-                    return element.Name
+                    name = element.Name
+                    if name and not name.startswith('IronPython'):
+                        return name
+                
+                # Альтернатива через FamilyCategory
+                if hasattr(element, 'FamilyCategory') and element.FamilyCategory:
+                    if hasattr(element.FamilyCategory, 'Name') and element.FamilyCategory.Name:
+                        return element.FamilyCategory.Name
+                
+                return "Семейство {0}".format(element.Id.IntegerValue)
             
             # Общий случай
             if hasattr(element, 'Name') and element.Name:
-                return element.Name
+                name = element.Name
+                if name and not name.startswith('IronPython'):
+                    return name
                 
         except Exception as e:
             add_log("GetElementName: Ошибка при получении имени элемента: {0}".format(str(e)))
         
-        return "Без имени"
+        return "Элемент {0}".format(element.Id.IntegerValue)
     
     def OnOKClick(self, sender, args):
         """Обработка нажатия OK"""
@@ -814,39 +837,60 @@ class MainForm(Form):
         return None
     
     def GetElementName(self, element):
-        """Получение корректного имени элемента"""
+        """Получение корректного имени элемента - версия для MainForm"""
         if not element:
             return "Без имени"
         
         try:
             # Для FamilySymbol (типоразмеров)
             if isinstance(element, FamilySymbol):
-                # Пробуем получить имя типа
+                # Основной способ - через свойство Name
                 if hasattr(element, 'Name') and element.Name:
-                    return element.Name
+                    name = element.Name
+                    if name and not name.startswith('IronPython'):
+                        return name
                 
-                # Или через параметры
-                param = element.LookupParameter("Тип")
-                if param and param.HasValue:
-                    return param.AsString()
+                # Альтернативный способ
+                if hasattr(element, 'Family') and element.Family:
+                    family_name = ""
+                    if hasattr(element.Family, 'Name') and element.Family.Name:
+                        family_name = element.Family.Name
+                    
+                    # Параметры для имени типа
+                    type_name = ""
+                    for param_name in ["Тип", "Type Name", "Имя типа"]:
+                        param = element.LookupParameter(param_name)
+                        if param and param.HasValue:
+                            type_name = param.AsString()
+                            break
+                    
+                    if family_name and type_name:
+                        return "{0} - {1}".format(family_name, type_name)
+                    elif type_name:
+                        return type_name
+                    elif family_name:
+                        return family_name
                 
-                param = element.LookupParameter("Type")
-                if param and param.HasValue:
-                    return param.AsString()
+                return "Типоразмер {0}".format(element.Id.IntegerValue)
             
             # Для Family (семейств)
             elif isinstance(element, Family):
                 if hasattr(element, 'Name') and element.Name:
-                    return element.Name
+                    name = element.Name
+                    if name and not name.startswith('IronPython'):
+                        return name
+                return "Семейство {0}".format(element.Id.IntegerValue)
             
             # Общий случай
             if hasattr(element, 'Name') and element.Name:
-                return element.Name
+                name = element.Name
+                if name and not name.startswith('IronPython'):
+                    return name
                 
         except Exception as e:
             add_log("GetElementName: Ошибка при получении имени элемента: {0}".format(str(e)))
         
-        return "Без имени"
+        return "Элемент {0}".format(element.Id.IntegerValue)
     
     def OnTagFamilyDoubleClick(self, sender, args):
         """Обработка двойного клика для изменения семейства марки"""
@@ -1084,27 +1128,42 @@ class MainForm(Form):
             
             center = (bbox.Min + bbox.Max) / 2
             
-            # Конвертация мм в футы (1 фут = 304.8 мм)
-            offset_x_feet = self.settings.offset_x / 304.8
-            offset_y_feet = self.settings.offset_y / 304.8
+            # Получаем масштаб вида для корректного расчета смещения
+            scale = view.Scale
+            add_log("CreateTagImproved: Масштаб вида: 1:{0}".format(scale))
+            
+            # Корректируем смещение в зависимости от масштаба
+            # Чем крупнее масштаб (меньше число), тем больше должно быть смещение
+            scale_factor = 100.0 / scale  # Базовый масштаб 1:100
+            
+            # Конвертация мм в футы (1 фут = 304.8 мм) с учетом масштаба
+            offset_x_feet = (self.settings.offset_x * scale_factor) / 304.8
+            offset_y_feet = (self.settings.offset_y * scale_factor) / 304.8
+            
+            add_log("CreateTagImproved: Смещение с учетом масштаба - X:{0} футов, Y:{1} футов".format(offset_x_feet, offset_y_feet))
+            
+            # Определяем направление смещения в зависимости от положения элемента
+            # Для разнообразия размещаем марки в разных направлениях
+            direction_x = 1 if element.Id.IntegerValue % 2 == 0 else -1
+            direction_y = 1 if (element.Id.IntegerValue % 3 == 0) else -1
             
             # Создаем точку смещения от центра элемента
             tag_point = XYZ(
-                center.X + offset_x_feet,
-                center.Y + offset_y_feet,
+                center.X + (offset_x_feet * direction_x),
+                center.Y + (offset_y_feet * direction_y),
                 center.Z
             )
             
             add_log("CreateTagImproved: Точка размещения: {0}".format(tag_point))
             
-            # Создаем ссылку на элемент - КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ
+            # Создаем ссылку на элемент
             element_ref = Reference(element)
             add_log("CreateTagImproved: Ссылка создана")
             
             # Используем правильный TagMode как в Dynamo
             tag_mode = TagMode.TM_ADDBY_CATEGORY
             
-            # Создаем марку - ИСПРАВЛЕННЫЙ ВЫЗОВ
+            # Создаем марку
             tag = IndependentTag.Create(
                 self.doc,
                 view.Id,
