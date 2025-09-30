@@ -170,12 +170,12 @@ class TagFamilySelectionForm(Form):
         """Заполнение списка типоразмеров для выбранного семейства"""
         add_log("TagFamilySelectionForm: Загрузка типоразмеров для семейства {0}".format(self.GetElementName(family)))
         self.lstTypes.Items.Clear()
-        
+    
         try:
             # Получаем все типоразмеры выбранного семейства
             symbol_ids = family.GetFamilySymbolIds()
             add_log("TagFamilySelectionForm: Найдено типоразмеров: {0}".format(symbol_ids.Count if symbol_ids else 0))
-            
+        
             if symbol_ids and symbol_ids.Count > 0:
                 symbol_id_list = list(symbol_ids)
                 for i, symbol_id in enumerate(symbol_id_list):
@@ -183,11 +183,16 @@ class TagFamilySelectionForm(Form):
                     if symbol:
                         # Получаем имя типоразмера
                         symbol_name = self.GetElementName(symbol)
-                        add_log("TagFamilySelectionForm: Типоразмер {0}: {1}".format(i, symbol_name))
+                    
+                        # Добавляем информацию о активности
+                        status = " (активный)" if symbol.IsActive else " (не активный)"
+                        display_name = symbol_name + status
+                    
+                        add_log("TagFamilySelectionForm: Типоразмер {0}: {1}".format(i, display_name))
                         # Создаем объект для хранения и типоразмера и его имени
-                        type_item = FamilyListItem(symbol_name, symbol)
+                        type_item = FamilyListItem(display_name, symbol)
                         self.lstTypes.Items.Add(type_item)
-                
+            
                 # Выбираем текущий типоразмер если есть
                 if self.current_type:
                     for i in range(self.lstTypes.Items.Count):
@@ -195,18 +200,25 @@ class TagFamilySelectionForm(Form):
                             self.lstTypes.SelectedIndex = i
                             add_log("TagFamilySelectionForm: Выбран текущий типоразмер с индексом {0}".format(i))
                             break
-                # Иначе выбираем первый типоразмер
-                elif self.lstTypes.Items.Count > 0:
-                    self.lstTypes.SelectedIndex = 0
-                    add_log("TagFamilySelectionForm: Выбран первый типоразмер по умолчанию")
+                # Иначе выбираем первый активный типоразмер
+                else:
+                    for i in range(self.lstTypes.Items.Count):
+                        if self.lstTypes.Items[i].Tag.IsActive:
+                            self.lstTypes.SelectedIndex = i
+                            add_log("TagFamilySelectionForm: Выбран первый активный типоразмер с индексом {0}".format(i))
+                            break
+                    # Если нет активных, выбираем первый
+                    if self.lstTypes.SelectedIndex == -1 and self.lstTypes.Items.Count > 0:
+                        self.lstTypes.SelectedIndex = 0
+                        add_log("TagFamilySelectionForm: Выбран первый типоразмер по умолчанию")
             else:
                 add_log("TagFamilySelectionForm: В выбранном семействе нет типоразмеров")
                 MessageBox.Show("В выбранном семействе нет типоразмеров")
-                    
+                
         except Exception as e:
             add_log("TagFamilySelectionForm: Ошибка при загрузке типоразмеров: {0}".format(str(e)))
             MessageBox.Show("Ошибка при загрузке типоразмеров")
-    
+
     def GetElementName(self, element):
         """Получение корректного имени элемента"""
         if not element:
@@ -215,16 +227,38 @@ class TagFamilySelectionForm(Form):
         try:
             # Для FamilySymbol (типоразмеров)
             if isinstance(element, FamilySymbol):
-                # Пробуем получить имя типа
-                if hasattr(element, 'Name') and element.Name:
-                    return element.Name
+                # Пробуем получить имя через FamilyName + Name
+                family_name = ""
+                type_name = ""
                 
-                # Или через параметры
+                # Получаем имя семейства
+                if hasattr(element, 'FamilyName') and element.FamilyName:
+                    family_name = element.FamilyName
+                elif element.Family and hasattr(element.Family, 'Name'):
+                    family_name = element.Family.Name
+                
+                # Получаем имя типа
+                if hasattr(element, 'Name') and element.Name:
+                    type_name = element.Name
+                
+                # Комбинируем для лучшего отображения
+                if family_name and type_name:
+                    return "{0} - {1}".format(family_name, type_name)
+                elif type_name:
+                    return type_name
+                elif family_name:
+                    return family_name
+                
+                # Пробуем через параметры как запасной вариант
                 param = element.LookupParameter("Тип")
                 if param and param.HasValue:
                     return param.AsString()
                 
-                param = element.LookupParameter("Type")
+                param = element.LookupParameter("Type Name")
+                if param and param.HasValue:
+                    return param.AsString()
+                
+                param = element.LookupParameter("Имя типа")
                 if param and param.HasValue:
                     return param.AsString()
             
@@ -238,7 +272,7 @@ class TagFamilySelectionForm(Form):
                 return element.Name
                 
         except Exception as e:
-            add_log("TagFamilySelectionForm: Ошибка при получении имени элемента: {0}".format(str(e)))
+            add_log("GetElementName: Ошибка при получении имени элемента: {0}".format(str(e)))
         
         return "Без имени"
     
