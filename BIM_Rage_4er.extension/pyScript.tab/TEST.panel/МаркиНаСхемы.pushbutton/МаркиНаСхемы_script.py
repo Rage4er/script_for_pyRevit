@@ -79,13 +79,17 @@ class TagFamilySelectionForm(Form):
         self.selected_family = None
         self.selected_type = None
         
+        # Словари для хранения соответствия между отображаемыми именами и объектами
+        self.family_dict = {}
+        self.type_dict = {}
+        
         self.InitializeComponent()
         self.PopulateFamiliesList()
     
     def InitializeComponent(self):
         add_log("TagFamilySelectionForm: Создание компонентов формы")
         self.Text = "Выбор семейства и типоразмера марки"
-        self.Size = Size(500, 400)
+        self.Size = Size(800, 500)
         self.StartPosition = FormStartPosition.CenterParent
         self.FormBorderStyle = FormBorderStyle.FixedDialog
         self.MaximizeBox = False
@@ -95,36 +99,36 @@ class TagFamilySelectionForm(Form):
         self.lblFamilies = Label()
         self.lblFamilies.Text = "Выберите семейство марки:"
         self.lblFamilies.Location = Point(10, 10)
-        self.lblFamilies.Size = Size(300, 20)
+        self.lblFamilies.Size = Size(250, 20)
         
         # Список семейств
         self.lstFamilies = ListBox()
         self.lstFamilies.Location = Point(10, 40)
-        self.lstFamilies.Size = Size(200, 200)
+        self.lstFamilies.Size = Size(250, 350)
         self.lstFamilies.SelectedIndexChanged += self.OnFamilySelected
         
         # Метка для типоразмеров
         self.lblTypes = Label()
         self.lblTypes.Text = "Выберите типоразмер:"
-        self.lblTypes.Location = Point(220, 10)
-        self.lblTypes.Size = Size(300, 20)
+        self.lblTypes.Location = Point(270, 10)
+        self.lblTypes.Size = Size(250, 20)
         
         # Список типоразмеров
         self.lstTypes = ListBox()
-        self.lstTypes.Location = Point(220, 40)
-        self.lstTypes.Size = Size(200, 200)
+        self.lstTypes.Location = Point(270, 40)
+        self.lstTypes.Size = Size(500, 350)
         
         # Кнопка OK
         self.btnOK = Button()
         self.btnOK.Text = "OK"
-        self.btnOK.Location = Point(300, 250)
+        self.btnOK.Location = Point(400, 400)
         self.btnOK.Size = Size(75, 25)
         self.btnOK.Click += self.OnOKClick
         
         # Кнопка Отмена
         self.btnCancel = Button()
         self.btnCancel.Text = "Отмена"
-        self.btnCancel.Location = Point(380, 250)
+        self.btnCancel.Location = Point(485, 400)
         self.btnCancel.Size = Size(75, 25)
         self.btnCancel.Click += self.OnCancelClick
         
@@ -136,20 +140,23 @@ class TagFamilySelectionForm(Form):
         """Заполнение списка семейств"""
         add_log("TagFamilySelectionForm: Заполнение списка семейств. Доступно: {0}".format(len(self.available_families)))
         self.lstFamilies.Items.Clear()
+        self.family_dict.clear()
         
         for i, family in enumerate(self.available_families):
             if family:
-                # Получаем имя семейства
-                family_name = self.GetElementName(family)
+                # Получаем имя семейства с использованием улучшенной функции
+                family_name = self.GetElementNameImproved(family)
                 add_log("TagFamilySelectionForm: Семейство {0}: {1}".format(i, family_name))
-                # Создаем объект для хранения и семейства и его имени
-                item = FamilyListItem(family_name, family)
-                self.lstFamilies.Items.Add(item)
+                
+                # Добавляем имя в список и сохраняем соответствие в словаре
+                self.lstFamilies.Items.Add(family_name)
+                self.family_dict[family_name] = family
         
         # Выбираем текущее семейство если есть
         if self.current_family:
+            current_family_name = self.GetElementNameImproved(self.current_family)
             for i in range(self.lstFamilies.Items.Count):
-                if self.lstFamilies.Items[i].Tag == self.current_family:
+                if self.lstFamilies.Items[i] == current_family_name:
                     self.lstFamilies.SelectedIndex = i
                     add_log("TagFamilySelectionForm: Выбрано текущее семейство с индексом {0}".format(i))
                     break
@@ -160,16 +167,18 @@ class TagFamilySelectionForm(Form):
     
     def OnFamilySelected(self, sender, args):
         """Обработка выбора семейства"""
-        if self.lstFamilies.SelectedItem:
-            selected_item = self.lstFamilies.SelectedItem
-            selected_family = selected_item.Tag
-            add_log("TagFamilySelectionForm: Выбрано семейство: {0}".format(self.GetElementName(selected_family)))
-            self.PopulateTypesList(selected_family)
+        if self.lstFamilies.SelectedIndex >= 0:
+            selected_family_name = self.lstFamilies.SelectedItem
+            selected_family = self.family_dict.get(selected_family_name)
+            if selected_family:
+                add_log("TagFamilySelectionForm: Выбрано семейство: {0}".format(selected_family_name))
+                self.PopulateTypesList(selected_family)
     
     def PopulateTypesList(self, family):
         """Заполнение списка типоразмеров для выбранного семейства"""
-        add_log("TagFamilySelectionForm: Загрузка типоразмеров для семейства {0}".format(self.GetElementName(family)))
+        add_log("TagFamilySelectionForm: Загрузка типоразмеров для семейства {0}".format(self.GetElementNameImproved(family)))
         self.lstTypes.Items.Clear()
+        self.type_dict.clear()
 
         try:
             # Получаем все типоразмеры выбранного семейства
@@ -181,8 +190,8 @@ class TagFamilySelectionForm(Form):
                 for i, symbol_id in enumerate(symbol_id_list):
                     symbol = self.doc.GetElement(symbol_id)
                     if symbol:
-                        # Получаем имя типоразмера
-                        symbol_name = self.GetElementName(symbol)
+                        # Получаем имя типоразмера с использованием улучшенной функции
+                        symbol_name = self.GetElementNameImproved(symbol)
                     
                         # Добавляем информацию о активности и ID
                         status = " (активный)" if symbol.IsActive else " (не активный)"
@@ -190,22 +199,30 @@ class TagFamilySelectionForm(Form):
                         display_name = "{0}{1}{2}".format(symbol_name, status, id_info)
                     
                         add_log("TagFamilySelectionForm: Типоразмер {0}: {1}".format(i, display_name))
-                        # Создаем объект для хранения и типоразмера и его имени
-                        type_item = FamilyListItem(display_name, symbol)
-                        self.lstTypes.Items.Add(type_item)
+                        
+                        # Добавляем имя в список и сохраняем соответствие в словаре
+                        self.lstTypes.Items.Add(display_name)
+                        self.type_dict[display_name] = symbol
             
                 # Выбираем текущий типоразмер если есть
                 if self.current_type:
-                    for i in range(self.lstTypes.Items.Count):
-                        if self.lstTypes.Items[i].Tag == self.current_type:
-                            self.lstTypes.SelectedIndex = i
-                            add_log("TagFamilySelectionForm: Выбран текущий типоразмер с индексом {0}".format(i))
+                    current_type_name = self.GetElementNameImproved(self.current_type)
+                    # Ищем типоразмер в словаре по имени
+                    for display_name, symbol in self.type_dict.items():
+                        if symbol == self.current_type:
+                            for i in range(self.lstTypes.Items.Count):
+                                if self.lstTypes.Items[i] == display_name:
+                                    self.lstTypes.SelectedIndex = i
+                                    add_log("TagFamilySelectionForm: Выбран текущий типоразмер с индексом {0}".format(i))
+                                    break
                             break
                 # Иначе выбираем первый активный типоразмер
                 else:
                     active_found = False
                     for i in range(self.lstTypes.Items.Count):
-                        if self.lstTypes.Items[i].Tag.IsActive:
+                        display_name = self.lstTypes.Items[i]
+                        symbol = self.type_dict.get(display_name)
+                        if symbol and symbol.IsActive:
                             self.lstTypes.SelectedIndex = i
                             add_log("TagFamilySelectionForm: Выбран первый активный типоразмер с индексом {0}".format(i))
                             active_found = True
@@ -222,8 +239,8 @@ class TagFamilySelectionForm(Form):
             add_log("TagFamilySelectionForm: Ошибка при загрузке типоразмеров: {0}".format(str(e)))
             MessageBox.Show("Ошибка при загрузке типоразмеров")
 
-    def GetElementName(self, element):
-        """Получение корректного имени элемента"""
+    def GetElementNameImproved(self, element):
+        """Улучшенное получение корректного имени элемента"""
         if not element:
             return "Без имени"
         
@@ -295,20 +312,27 @@ class TagFamilySelectionForm(Form):
                     return name
                 
         except Exception as e:
-            add_log("GetElementName: Ошибка при получении имени элемента: {0}".format(str(e)))
+            add_log("GetElementNameImproved: Ошибка при получении имени элемента: {0}".format(str(e)))
         
         return "Элемент {0}".format(element.Id.IntegerValue)
     
     def OnOKClick(self, sender, args):
         """Обработка нажатия OK"""
-        if self.lstFamilies.SelectedItem and self.lstTypes.SelectedItem:
-            self.selected_family = self.lstFamilies.SelectedItem.Tag
-            self.selected_type = self.lstTypes.SelectedItem.Tag
-            add_log("TagFamilySelectionForm: Выбрано - Семейство: {0}, Тип: {1}".format(
-                self.GetElementName(self.selected_family), 
-                self.GetElementName(self.selected_type)))
-            self.DialogResult = DialogResult.OK
-            self.Close()
+        if self.lstFamilies.SelectedIndex >= 0 and self.lstTypes.SelectedIndex >= 0:
+            selected_family_name = self.lstFamilies.SelectedItem
+            selected_type_name = self.lstTypes.SelectedItem
+            
+            self.selected_family = self.family_dict.get(selected_family_name)
+            self.selected_type = self.type_dict.get(selected_type_name)
+            
+            if self.selected_family and self.selected_type:
+                add_log("TagFamilySelectionForm: Выбрано - Семейство: {0}, Тип: {1}".format(
+                    selected_family_name, selected_type_name))
+                self.DialogResult = DialogResult.OK
+                self.Close()
+            else:
+                add_log("TagFamilySelectionForm: Ошибка при получении выбранных объектов")
+                MessageBox.Show("Ошибка при получении выбранных объектов!")
         else:
             add_log("TagFamilySelectionForm: Не выбрано семейство или типоразмер")
             MessageBox.Show("Выберите семейство и типоразмер марки!")
@@ -343,7 +367,7 @@ class MainForm(Form):
     def InitializeComponent(self):
         add_log("MainForm: Создание компонентов интерфейса")
         self.Text = "Расстановка марок на 3D видах"
-        self.Size = Size(800, 600)
+        self.Size = Size(750, 550)
         self.StartPosition = FormStartPosition.CenterScreen
         
         # Создание вкладок
@@ -393,19 +417,21 @@ class MainForm(Form):
         
         self.lstViews = CheckedListBox()
         self.lstViews.Location = Point(10, 40)
-        self.lstViews.Size = Size(500, 300)
+        self.lstViews.Size = Size(600, 400)
         self.lstViews.CheckOnClick = True
         
         # Кнопка продолжить
         self.btnNext1 = Button()
         self.btnNext1.Text = "Далее →"
-        self.btnNext1.Location = Point(400, 350)
+        self.btnNext1.Location = Point(500, 450)
+        self.btnNext1.Size = Size(80, 25)
         self.btnNext1.Click += self.OnNext1Click
         
         # Кнопка показа логов
         self.btnShowLogs = Button()
         self.btnShowLogs.Text = "Показать логи"
-        self.btnShowLogs.Location = Point(10, 350)
+        self.btnShowLogs.Location = Point(10, 450)
+        self.btnShowLogs.Size = Size(100, 25)
         self.btnShowLogs.Click += self.OnShowLogsClick
         
         controls = [self.lblViews, self.lstViews, self.btnNext1, self.btnShowLogs]
@@ -422,17 +448,19 @@ class MainForm(Form):
         # ListBox для категорий
         self.lstCategories = CheckedListBox()
         self.lstCategories.Location = Point(10, 40)
-        self.lstCategories.Size = Size(500, 300)
+        self.lstCategories.Size = Size(600, 400)
         self.lstCategories.CheckOnClick = True
         
         self.btnNext2 = Button()
         self.btnNext2.Text = "Далее →"
-        self.btnNext2.Location = Point(400, 350)
+        self.btnNext2.Location = Point(500, 450)
+        self.btnNext2.Size = Size(80, 25)
         self.btnNext2.Click += self.OnNext2Click
         
         self.btnBack1 = Button()
         self.btnBack1.Text = "← Назад"
-        self.btnBack1.Location = Point(300, 350)
+        self.btnBack1.Location = Point(400, 450)
+        self.btnBack1.Size = Size(80, 25)
         self.btnBack1.Click += self.OnBack1Click
         
         controls = [
@@ -447,29 +475,34 @@ class MainForm(Form):
         self.lblTags = Label()
         self.lblTags.Text = "Выберите семейства и типоразмеры марок для категорий:"
         self.lblTags.Location = Point(10, 10)
-        self.lblTags.Size = Size(300, 20)
+        self.lblTags.Size = Size(400, 20)
         
         # ListView для выбора семейств и типоразмеров
         self.lstTagFamilies = ListView()
         self.lstTagFamilies.Location = Point(10, 40)
-        self.lstTagFamilies.Size = Size(500, 300)
+        self.lstTagFamilies.Size = Size(700, 400)
         self.lstTagFamilies.View = View.Details
         self.lstTagFamilies.FullRowSelect = True
-        self.lstTagFamilies.Columns.Add("Категория", 150)
+        self.lstTagFamilies.GridLines = True
+        
+        # Увеличил ширину колонок
+        self.lstTagFamilies.Columns.Add("Категория", 180)
         self.lstTagFamilies.Columns.Add("Семейство марки", 200)
-        self.lstTagFamilies.Columns.Add("Типоразмер марки", 150)
+        self.lstTagFamilies.Columns.Add("Типоразмер марки", 300)
         
         # Добавляем обработчик двойного клика для изменения марки
         self.lstTagFamilies.DoubleClick += self.OnTagFamilyDoubleClick
         
         self.btnNext3 = Button()
         self.btnNext3.Text = "Далее →"
-        self.btnNext3.Location = Point(400, 350)
+        self.btnNext3.Location = Point(600, 450)
+        self.btnNext3.Size = Size(80, 25)
         self.btnNext3.Click += self.OnNext3Click
         
         self.btnBack2 = Button()
         self.btnBack2.Text = "← Назад"
-        self.btnBack2.Location = Point(300, 350)
+        self.btnBack2.Location = Point(500, 450)
+        self.btnBack2.Size = Size(80, 25)
         self.btnBack2.Click += self.OnBack2Click
         
         controls = [
@@ -530,12 +563,14 @@ class MainForm(Form):
         
         self.btnNext4 = Button()
         self.btnNext4.Text = "Далее →"
-        self.btnNext4.Location = Point(400, 350)
+        self.btnNext4.Location = Point(600, 450)
+        self.btnNext4.Size = Size(80, 25)
         self.btnNext4.Click += self.OnNext4Click
         
         self.btnBack3 = Button()
         self.btnBack3.Text = "← Назад"
-        self.btnBack3.Location = Point(300, 350)
+        self.btnBack3.Location = Point(500, 450)
+        self.btnBack3.Size = Size(80, 25)
         self.btnBack3.Click += self.OnBack3Click
         
         controls = [
@@ -556,20 +591,21 @@ class MainForm(Form):
         
         self.txtSummary = TextBox()
         self.txtSummary.Location = Point(10, 40)
-        self.txtSummary.Size = Size(500, 200)
+        self.txtSummary.Size = Size(700, 400)
         self.txtSummary.Multiline = True
         self.txtSummary.ScrollBars = ScrollBars.Vertical
         self.txtSummary.ReadOnly = True
         
         self.btnExecute = Button()
         self.btnExecute.Text = "Выполнить расстановку"
-        self.btnExecute.Location = Point(300, 250)
+        self.btnExecute.Location = Point(500, 450)
         self.btnExecute.Size = Size(150, 30)
         self.btnExecute.Click += self.OnExecuteClick
         
         self.btnBack4 = Button()
         self.btnBack4.Text = "← Назад"
-        self.btnBack4.Location = Point(150, 250)
+        self.btnBack4.Location = Point(340, 450)
+        self.btnBack4.Size = Size(80, 25)
         self.btnBack4.Click += self.OnBack4Click
         
         controls = [
@@ -739,8 +775,8 @@ class MainForm(Form):
             tag_family, tag_type = self.FindSuitableTagForCategory(category)
             
             if tag_family and tag_type:
-                family_name = self.GetElementName(tag_family)
-                type_name = self.GetElementName(tag_type)
+                family_name = self.GetElementNameImproved(tag_family)
+                type_name = self.GetElementNameImproved(tag_type)
                 item.SubItems.Add(family_name)
                 item.SubItems.Add(type_name)
                 self.settings.category_tag_families[category] = tag_family
@@ -778,10 +814,10 @@ class MainForm(Form):
             if not family or not hasattr(family, 'FamilyCategory'):
                 continue
                 
-            add_log("FindSuitableTagForCategory: Проверяем семейство: {0}".format(self.GetElementName(family)))
+            add_log("FindSuitableTagForCategory: Проверяем семейство: {0}".format(self.GetElementNameImproved(family)))
                 
             if family.FamilyCategory and family.FamilyCategory.Id == tag_category_id:
-                add_log("FindSuitableTagForCategory: Нашли подходящее семейство: {0}".format(self.GetElementName(family)))
+                add_log("FindSuitableTagForCategory: Нашли подходящее семейство: {0}".format(self.GetElementNameImproved(family)))
                 
                 # Получаем все доступные типоразмеры
                 symbol_ids = family.GetFamilySymbolIds()
@@ -795,11 +831,11 @@ class MainForm(Form):
                         for symbol_id in symbol_id_list:
                             tag_type = self.doc.GetElement(symbol_id)
                             if tag_type and tag_type.IsActive:
-                                add_log("FindSuitableTagForCategory: Найден активный типоразмер: {0}".format(self.GetElementName(tag_type)))
+                                add_log("FindSuitableTagForCategory: Найден активный типоразмер: {0}".format(self.GetElementNameImproved(tag_type)))
                                 return family, tag_type
                         # Если нет активных, берем первый доступный
                         tag_type = self.doc.GetElement(symbol_id_list[0])
-                        add_log("FindSuitableTagForCategory: Используем первый типоразмер: {0}".format(self.GetElementName(tag_type)))
+                        add_log("FindSuitableTagForCategory: Используем первый типоразмер: {0}".format(self.GetElementNameImproved(tag_type)))
                         return family, tag_type
         
         add_log("FindSuitableTagForCategory: Не найдено подходящих марок")
@@ -836,8 +872,8 @@ class MainForm(Form):
         add_log("GetTagCategoryForElementCategory: Категория марки не найдена")
         return None
     
-    def GetElementName(self, element):
-        """Получение корректного имени элемента - версия для MainForm"""
+    def GetElementNameImproved(self, element):
+        """Улучшенное получение корректного имени элемента - версия для MainForm"""
         if not element:
             return "Без имени"
         
@@ -888,7 +924,7 @@ class MainForm(Form):
                     return name
                 
         except Exception as e:
-            add_log("GetElementName: Ошибка при получении имени элемента: {0}".format(str(e)))
+            add_log("GetElementNameImproved: Ошибка при получении имени элемента: {0}".format(str(e)))
         
         return "Элемент {0}".format(element.Id.IntegerValue)
     
@@ -912,8 +948,8 @@ class MainForm(Form):
                 
                 if result == DialogResult.OK and form.SelectedFamily and form.SelectedType:
                     # Обновляем выбранное семейство и типоразмер
-                    family_name = self.GetElementName(form.SelectedFamily)
-                    type_name = self.GetElementName(form.SelectedType)
+                    family_name = self.GetElementNameImproved(form.SelectedFamily)
+                    type_name = self.GetElementNameImproved(form.SelectedType)
                     selected_item.SubItems[1].Text = family_name
                     selected_item.SubItems[2].Text = type_name
                     self.settings.category_tag_families[category] = form.SelectedFamily
@@ -953,7 +989,7 @@ class MainForm(Form):
                 # Проверим сразу есть ли типоразмеры
                 symbol_ids = family.GetFamilySymbolIds()
                 add_log("GetAvailableTagFamiliesForCategory: Семейство: {0} (типоразмеров: {1})".format(
-                    self.GetElementName(family), 
+                    self.GetElementNameImproved(family), 
                     symbol_ids.Count if symbol_ids else 0))
         
         add_log("GetAvailableTagFamiliesForCategory: Итого найдено семейств марок для категории {0}: {1}".format(
@@ -1013,8 +1049,8 @@ class MainForm(Form):
             cat_name = self.GetCategoryDisplayName(category)
             
             if tag_family and tag_type:
-                family_name = self.GetElementName(tag_family)
-                type_name = self.GetElementName(tag_type)
+                family_name = self.GetElementNameImproved(tag_family)
+                type_name = self.GetElementNameImproved(tag_type)
                 summary += "- {0}: {1} ({2})\n".format(cat_name, family_name, type_name)
             else:
                 summary += "- {0}: НЕТ МАРКИ\n".format(cat_name)
@@ -1181,7 +1217,7 @@ class MainForm(Form):
                 if tag_type:
                     try:
                         tag.ChangeTypeId(tag_type.Id)
-                        add_log("CreateTagImproved: Типоразмер установлен: {0}".format(self.GetElementName(tag_type)))
+                        add_log("CreateTagImproved: Типоразмер установлен: {0}".format(self.GetElementNameImproved(tag_type)))
                     except Exception as e:
                         add_log("CreateTagImproved: Ошибка при установке типоразмера: {0}".format(str(e)))
                 
