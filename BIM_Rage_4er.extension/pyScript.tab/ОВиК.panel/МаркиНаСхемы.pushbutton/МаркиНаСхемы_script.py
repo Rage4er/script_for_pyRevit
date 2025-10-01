@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
-__title__ = 'Автоматическое размещение маркировочных меток на 3D-видах'
-__author__ = 'г'
+__title__ = 'Марки на 3D'
+__author__ = 'Rage'
+__doc__ = 'Автоматическое размещение маркировочных меток на 3D-видах'
 
 import clr
 clr.AddReference('RevitAPI')
@@ -94,7 +95,7 @@ class MainForm(Form):
             self.CreateControl(CheckedListBox, Location=Point(10, 40), Size=Size(600, 400), CheckOnClick=True),
             self.CreateControl(CheckBox, Text="Включить логирование", Location=Point(10, 450), Size=Size(200, 20)),
             self.CreateControl(Button, Text="Показать логи", Location=Point(220, 450), Size=Size(100, 25)),
-            self.CreateControl(Button, Text="Далее →", Location=Point(500, 450), Size=Size(80, 25))
+            self.CreateControl(Button, Text="Далее →", Location=Point(600, 450), Size=Size(80, 25))
         ]
         self.lblViews, self.lstViews, self.chkLogging, self.btnShowLogs, self.btnNext1 = controls
         self.btnShowLogs.Click += self.OnShowLogsClick
@@ -106,8 +107,8 @@ class MainForm(Form):
         controls = [
             self.CreateControl(Label, Text="Выберите категории элементов:", Location=Point(10, 10), Size=Size(300, 20)),
             self.CreateControl(CheckedListBox, Location=Point(10, 40), Size=Size(600, 400), CheckOnClick=True),
-            self.CreateControl(Button, Text="← Назад", Location=Point(400, 450), Size=Size(80, 25)),
-            self.CreateControl(Button, Text="Далее →", Location=Point(500, 450), Size=Size(80, 25))
+            self.CreateControl(Button, Text="← Назад", Location=Point(500, 450), Size=Size(80, 25)),
+            self.CreateControl(Button, Text="Далее →", Location=Point(600, 450), Size=Size(80, 25))
         ]
         self.lblCategories, self.lstCategories, self.btnBack1, self.btnNext2 = controls
         self.btnBack1.Click += self.OnBack1Click
@@ -441,16 +442,16 @@ class MainForm(Form):
         return available_families
     
     def GenerateSummary(self):
-        summary = "СВОДКА ПЕРЕД ВЫПОЛНЕНИЕМ:\n\n"
-        summary += "Выбрано видов: " + str(len(self.settings.selected_views)) + "\n"
-        summary += "Выбрано категорий: " + str(len(self.settings.selected_categories)) + "\n"
+        summary = "СВОДКА ПЕРЕД ВЫПОЛНЕНИЕМ:\r\n\r\n"
+        summary += "Выбрано видов: " + str(len(self.settings.selected_views)) + "\r\n"
+        summary += "Выбрано категорий: " + str(len(self.settings.selected_categories)) + "\r\n"
         
         orientation_text = "Горизонтальная" if self.settings.orientation == TagOrientation.Horizontal else "Вертикальная"
-        summary += "Ориентация: " + orientation_text + "\n"
-        summary += "Выноска: " + ("Да" if self.settings.use_leader else "Нет") + "\n"
-        summary += "Логирование: " + ("Включено" if self.settings.enable_logging else "Отключено") + "\n\n"
+        summary += "Ориентация: " + orientation_text + "\r\n"
+        summary += "Выноска: " + ("Да" if self.settings.use_leader else "Нет") + "\r\n"
+        summary += "Логирование: " + ("Включено" if self.settings.enable_logging else "Отключено") + "\r\n\r\n"
         
-        summary += "Детали по категориям:\n"
+        summary += "Детали по категориям:\r\n"
         for category in self.settings.selected_categories:
             tag_family = self.settings.category_tag_families.get(category)
             tag_type = self.settings.category_tag_types.get(category)
@@ -458,7 +459,7 @@ class MainForm(Form):
                 status = self.GetElementName(tag_family) + " (" + self.GetElementName(tag_type) + ")"
             else:
                 status = "НЕТ МАРКИ"
-            summary += "- " + self.GetCategoryName(category) + ": " + status + "\n"
+            summary += "- " + self.GetCategoryName(category) + ": " + status + "\r\n"
         return summary
     
     def OnExecuteClick(self, sender, args):
