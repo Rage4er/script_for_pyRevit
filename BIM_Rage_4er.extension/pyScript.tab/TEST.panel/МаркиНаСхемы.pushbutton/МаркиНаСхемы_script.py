@@ -530,7 +530,8 @@ class MainForm(BaseForm):
             BuiltInCategory.OST_FlexDuctCurves,
             BuiltInCategory.OST_DuctInsulations,
             BuiltInCategory.OST_DuctTerminal,
-            BuiltInCategory.OST_DuctAccessory
+            BuiltInCategory.OST_DuctAccessory,
+            BuiltInCategory.OST_MechanicalEquipment  # ДОБАВЛЕНА НОВАЯ КАТЕГОРИЯ
         ]
         
         unique_categories = set()
@@ -630,7 +631,8 @@ class MainForm(BaseForm):
             BuiltInCategory.OST_FlexDuctCurves: BuiltInCategory.OST_DuctTags,
             BuiltInCategory.OST_DuctTerminal: BuiltInCategory.OST_DuctTerminalTags,
             BuiltInCategory.OST_DuctAccessory: BuiltInCategory.OST_DuctAccessoryTags,
-            BuiltInCategory.OST_DuctInsulations: BuiltInCategory.OST_DuctInsulationsTags
+            BuiltInCategory.OST_DuctInsulations: BuiltInCategory.OST_DuctInsulationsTags,
+            BuiltInCategory.OST_MechanicalEquipment: BuiltInCategory.OST_MechanicalEquipmentTags  # ДОБАВЛЕНА НОВАЯ КАТЕГОРИЯ МАРОК
         }
         
         try:
