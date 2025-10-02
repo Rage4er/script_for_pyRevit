@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import clr
+import random
 import System
 clr.AddReference('System.Windows.Forms')
 clr.AddReference('System.Drawing')
@@ -11,7 +12,7 @@ from System.Timers import Timer
 class TicTacToeForm(Form):
     def __init__(self):
         self.Text = "Крестики-Нолики in PyRevit"
-        self.Size = Size(400, 500)
+        self.Size = Size(450, 550)
         self.StartPosition = FormStartPosition.CenterScreen
         self.BackColor = Color.LightBlue
         self.DoubleBuffered = True
@@ -26,19 +27,51 @@ class TicTacToeForm(Form):
         self.game_over = False
         self.winner = None
         self.moves_count = 0
+        self.game_mode = "PvP"  # PvP, PvE
+        self.player_symbol = 'X'
+        self.computer_symbol = 'O'
         
         # Панель управления
         self.control_panel = Panel()
         self.control_panel.Location = Point(0, 0)
-        self.control_panel.Size = Size(400, 40)
+        self.control_panel.Size = Size(450, 60)
         self.control_panel.BackColor = Color.DarkBlue
+        
+        # Выбор режима игры
+        self.mode_label = Label()
+        self.mode_label.Text = "Режим:"
+        self.mode_label.ForeColor = Color.White
+        self.mode_label.Location = Point(10, 10)
+        self.mode_label.Size = Size(50, 20)
+        self.mode_label.Font = Font("Arial", 9)
+        self.control_panel.Controls.Add(self.mode_label)
+        
+        self.pvp_button = Button()
+        self.pvp_button.Text = "Игрок vs Игрок"
+        self.pvp_button.Location = Point(60, 8)
+        self.pvp_button.Size = Size(100, 24)
+        self.pvp_button.BackColor = Color.LightGreen
+        self.pvp_button.Font = Font("Arial", 8)
+        self.pvp_button.Click += lambda s, e: self.set_game_mode("PvP")
+        self.pvp_button.TabStop = False
+        self.control_panel.Controls.Add(self.pvp_button)
+        
+        self.pve_button = Button()
+        self.pve_button.Text = "Игрок vs Компьютер"
+        self.pve_button.Location = Point(165, 8)
+        self.pve_button.Size = Size(120, 24)
+        self.pve_button.BackColor = Color.LightGray
+        self.pve_button.Font = Font("Arial", 8)
+        self.pve_button.Click += lambda s, e: self.set_game_mode("PvE")
+        self.pve_button.TabStop = False
+        self.control_panel.Controls.Add(self.pve_button)
         
         # Статус
         self.status_label = Label()
         self.status_label.Text = "Крестики-Нолики | Ход: X"
         self.status_label.ForeColor = Color.White
-        self.status_label.Location = Point(10, 10)
-        self.status_label.Size = Size(380, 20)
+        self.status_label.Location = Point(10, 35)
+        self.status_label.Size = Size(430, 20)
         self.status_label.Font = Font("Arial", 10, FontStyle.Bold)
         self.control_panel.Controls.Add(self.status_label)
         
@@ -47,7 +80,7 @@ class TicTacToeForm(Form):
         # Кнопка Новая игра
         self.new_game_button = Button()
         self.new_game_button.Text = "Новая игра"
-        self.new_game_button.Location = Point(150, 400)
+        self.new_game_button.Location = Point(175, 450)
         self.new_game_button.Size = Size(100, 30)
         self.new_game_button.BackColor = Color.LightGreen
         self.new_game_button.Font = Font("Arial", 10)
@@ -57,6 +90,21 @@ class TicTacToeForm(Form):
         
         # Обработчик кликов по полю
         self.MouseClick += self.on_board_click
+        
+        self.new_game()
+    
+    def set_game_mode(self, mode):
+        self.game_mode = mode
+        if mode == "PvP":
+            self.pvp_button.BackColor = Color.LightGreen
+            self.pve_button.BackColor = Color.LightGray
+            self.player_symbol = 'X'
+            self.computer_symbol = 'O'
+        else:
+            self.pvp_button.BackColor = Color.LightGray
+            self.pve_button.BackColor = Color.LightGreen
+            self.player_symbol = 'X'
+            self.computer_symbol = 'O'
         
         self.new_game()
     
@@ -71,14 +119,22 @@ class TicTacToeForm(Form):
         self.moves_count = 0
         self.update_status()
         self.Invalidate()
+        
+        # Если режим PvE и компьютер ходит первым
+        if self.game_mode == "PvE" and self.current_player == self.computer_symbol:
+            self.computer_move()
     
     def on_board_click(self, sender, e):
         if self.game_over:
             return
             
+        # В режиме PvE игрок может ходить только когда его очередь
+        if self.game_mode == "PvE" and self.current_player != self.player_symbol:
+            return
+            
         # Определяем ячейку по координатам клика
         offset_x = (self.ClientSize.Width - self.board_size * self.cell_size) // 2
-        offset_y = 60
+        offset_y = 70
         
         # Проверяем попадание в игровое поле
         if (e.X < offset_x or e.X >= offset_x + self.board_size * self.cell_size or
@@ -89,7 +145,9 @@ class TicTacToeForm(Form):
         col = (e.X - offset_x) // self.cell_size
         row = (e.Y - offset_y) // self.cell_size
         
-        # Если ячейка пустая - делаем ход
+        self.make_move(row, col)
+    
+    def make_move(self, row, col):
         if self.board[row][col] == '':
             self.board[row][col] = self.current_player
             self.moves_count += 1
@@ -108,6 +166,72 @@ class TicTacToeForm(Form):
             
             self.update_status()
             self.Invalidate()
+            
+            # Если игра не окончена и режим PvE - ход компьютера
+            if not self.game_over and self.game_mode == "PvE" and self.current_player == self.computer_symbol:
+                # Небольшая задержка для естественности
+                timer = Timer(500)
+                timer.Elapsed += lambda s, e: self.computer_move_delayed()
+                timer.AutoReset = False
+                timer.Start()
+    
+    def computer_move_delayed(self):
+        self.Invoke(System.Action(self.computer_move))
+    
+    def computer_move(self):
+        if self.game_over:
+            return
+            
+        # Стратегия компьютера:
+        # 1. Попытаться выиграть
+        move = self.find_winning_move(self.computer_symbol)
+        if move:
+            self.make_move(move[0], move[1])
+            return
+            
+        # 2. Блокировать победу игрока
+        move = self.find_winning_move(self.player_symbol)
+        if move:
+            self.make_move(move[0], move[1])
+            return
+            
+        # 3. Занять центр если свободен
+        if self.board[1][1] == '':
+            self.make_move(1, 1)
+            return
+            
+        # 4. Занять угол если свободен
+        corners = [(0,0), (0,2), (2,0), (2,2)]
+        random.shuffle(corners)
+        for row, col in corners:
+            if self.board[row][col] == '':
+                self.make_move(row, col)
+                return
+        
+        # 5. Случайный ход
+        empty_cells = []
+        for row in range(3):
+            for col in range(3):
+                if self.board[row][col] == '':
+                    empty_cells.append((row, col))
+        
+        if empty_cells:
+            row, col = random.choice(empty_cells)
+            self.make_move(row, col)
+    
+    def find_winning_move(self, symbol):
+        # Проверяем все возможные ходы для символа
+        for row in range(3):
+            for col in range(3):
+                if self.board[row][col] == '':
+                    # Пробуем поставить символ
+                    self.board[row][col] = symbol
+                    # Проверяем выигрыш
+                    if self.check_win(row, col):
+                        self.board[row][col] = ''  # Отменяем ход
+                        return (row, col)
+                    self.board[row][col] = ''  # Отменяем ход
+        return None
     
     def check_win(self, row, col):
         player = self.board[row][col]
@@ -136,7 +260,13 @@ class TicTacToeForm(Form):
             else:
                 status = "Победил: {}! | Нажмите 'Новая игра'".format(self.winner)
         else:
-            status = "Крестики-Нолики | Ход: {}".format(self.current_player)
+            if self.game_mode == "PvE":
+                if self.current_player == self.player_symbol:
+                    status = "Ваш ход ({}). Кликайте по полю".format(self.current_player)
+                else:
+                    status = "Ход компьютера ({}). Ожидайте...".format(self.current_player)
+            else:
+                status = "Ход игрока: {}".format(self.current_player)
         
         self.status_label.Text = status
     
@@ -146,7 +276,7 @@ class TicTacToeForm(Form):
         
         # Смещение для центрирования игрового поля
         offset_x = (self.ClientSize.Width - self.board_size * self.cell_size) // 2
-        offset_y = 60
+        offset_y = 70
         
         # Рисуем сетку
         pen = Pen(Color.DarkBlue, 3)
@@ -173,11 +303,14 @@ class TicTacToeForm(Form):
         
         # Подпись игры
         title_font = Font("Arial", 16, FontStyle.Bold)
-        g.DrawString("КРЕСТИКИ-НОЛИКИ", title_font, Brushes.DarkBlue, 100, 350)
+        g.DrawString("КРЕСТИКИ-НОЛИКИ", title_font, Brushes.DarkBlue, 120, 350)
         
         # Инструкция
         instr_font = Font("Arial", 10)
-        g.DrawString("Кликайте по ячейкам чтобы сделать ход", instr_font, Brushes.DarkBlue, 80, 380)
+        if self.game_mode == "PvP":
+            g.DrawString("Игрок vs Игрок - кликайте по ячейкам", instr_font, Brushes.DarkBlue, 80, 380)
+        else:
+            g.DrawString("Игрок vs Компьютер - ваш ход крестиками", instr_font, Brushes.DarkBlue, 70, 380)
     
     def draw_x(self, g, x, y):
         pen = Pen(Color.Red, 4)
