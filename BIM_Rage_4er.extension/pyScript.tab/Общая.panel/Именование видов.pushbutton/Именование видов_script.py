@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
 
+__title__ = "Переименование видов"
+__author__ = 'Rage'
+__doc__ = '''Переименование выбранных видов, 
+добавление суффикса, префикса, 
+номера'''
+
 import clr
 clr.AddReference('RevitAPI')
 clr.AddReference('RevitAPIUI')
