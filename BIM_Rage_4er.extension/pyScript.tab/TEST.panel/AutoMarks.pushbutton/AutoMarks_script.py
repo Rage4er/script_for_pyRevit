@@ -131,6 +131,8 @@ class MainForm(Form):
         self.uidoc = uidoc
         self.settings = TagSettings()
         self.views_dict = {}
+        self.all_views_dict = {}
+        self.lstViewsChecked = {}
         self.category_mapping = {}
         self.logger = Logger(self.settings.enable_logging)
         self.tag_defaults = self.LoadTagDefaults()
@@ -147,6 +149,8 @@ class MainForm(Form):
         self.StartPosition = FormStartPosition.CenterScreen
         self.tabControl = TabControl()
         self.tabControl.Dock = DockStyle.Fill
+        self.tabControl.Selecting += self.OnTabSelecting
+        self._programmatic_select = False
 
         tabs = ["1. Выбор видов", "2. Категории", "3. Марки", "4. Настройки", "5. Выполнение"]
         for i, text in enumerate(tabs):
@@ -199,15 +203,23 @@ class MainForm(Form):
         Args:
             tab (TabPage): Вкладка для настройки.
         """
+        self.txtSearchViews = self.CreateControl(TextBox, Location=Point(120, 35), Size=Size(140, 20))
+        self.btnSelectAll = self.CreateButton(text="Выбрать все", location=Point(270, 35), size=Size(100, 25), click_handler=self.OnSelectAllViews)
+        self.btnDeselectAll = self.CreateButton(text="Снять выбор", location=Point(380, 35), size=Size(100, 25), click_handler=self.OnDeselectAllViews)
         controls = [
             self.CreateControl(Label, Text="Выберите 3D виды:", Location=Point(10, 10), Size=Size(300, 20)),
-            self.CreateControl(CheckedListBox, Location=Point(10, 40), Size=Size(600, 400), CheckOnClick=True),
-            self.CreateControl(CheckBox, Text="Включить логирование", Location=Point(10, 450), Size=Size(200, 20)),
-            self.CreateButton("Показать логи", Point(220, 450), Size(100, 25), self.OnShowLogsClick),
-            self.CreateButton("Далее →", Point(600, 450), click_handler=self.OnNext1Click)
+            self.CreateControl(Label, Text="Поиск:", Location=Point(70, 35), Size=Size(50, 20)),
+            self.txtSearchViews,
+            self.btnSelectAll,
+            self.btnDeselectAll,
+            self.CreateControl(CheckedListBox, Location=Point(10, 65), Size=Size(600, 360), CheckOnClick=True),
+            self.CreateControl(CheckBox, Text="Включить логирование", Location=Point(10, 440), Size=Size(200, 20)),
+            self.CreateButton(text="Показать логи", location=Point(220, 440), size=Size(100, 25), click_handler=self.OnShowLogsClick),
+            self.CreateButton(text="Далее →", location=Point(600, 440), click_handler=self.OnNext1Click)
         ]
-        self.lblViews, self.lstViews, self.chkLogging, self.btnShowLogs, self.btnNext1 = controls
+        self.lblViews, self.lblSearch, self.txtSearchViews, self.btnSelectAll, self.btnDeselectAll, self.lstViews, self.chkLogging, self.btnShowLogs, self.btnNext1 = controls[0], controls[1], controls[2], controls[3], controls[4], controls[5], controls[6], controls[7], controls[8]
         self.chkLogging.CheckedChanged += self.OnLoggingCheckedChanged
+        self.txtSearchViews.TextChanged += self.OnSearchViewsTextChanged
         for c in controls:
             tab.Controls.Add(c)
 
@@ -323,15 +335,35 @@ class MainForm(Form):
         try:
             views = FilteredElementCollector(self.doc).OfClass(View3D).WhereElementIsNotElementType().ToElements()
             self.lstViews.Items.Clear()
+            self.all_views_dict.clear()
+            self.views_dict.clear()
+            self.lstViewsChecked.clear()
             for view in views:
                 if not view.IsTemplate and view.CanBePrinted:
                     name = view.Name + " (ID: " + str(view.Id.IntegerValue) + ")"
-                    self.lstViews.Items.Add(name, False)
-                    self.views_dict[name] = view
+                    self.all_views_dict[name] = view
+                    self.lstViewsChecked[name] = False
+            self.UpdateViewsList("")  # Показать все
             if self.lstViews.Items.Count > 0:
                 self.lstViews.SetItemChecked(0, True)
+                self.lstViewsChecked[self.lstViews.Items[0]] = True
         except Exception as e:
             MessageBox.Show("Ошибка загрузки видов: " + str(e))
+
+    def UpdateViewsList(self, filter_text):
+        """
+        Обновляет список видов с фильтром.
+
+        Args:
+            filter_text (str): Текст фильтра.
+        """
+        self.lstViews.Items.Clear()
+        self.views_dict.clear()
+        filter_lower = filter_text.lower()
+        for name, view in self.all_views_dict.items():
+            if filter_lower in name.lower():
+                self.lstViews.Items.Add(name, self.lstViewsChecked.get(name, False))
+                self.views_dict[name] = view
 
     # Навигация
     def OnNext1Click(self, sender, args):
@@ -341,15 +373,43 @@ class MainForm(Form):
         self.settings.selected_views = []
         for i in range(self.lstViews.Items.Count):
             name = self.lstViews.Items[i]
-            if self.lstViews.GetItemChecked(i) and name in self.views_dict:
+            checked = self.lstViews.GetItemChecked(i)
+            if checked and name in self.views_dict:
                 self.settings.selected_views.append(self.views_dict[name])
+            self.lstViewsChecked[name] = checked
 
         if not self.settings.selected_views:
             MessageBox.Show("Выберите хотя бы один вид!")
             return
 
         self.CollectCategories()
+        self._programmatic_select = True
         self.tabControl.SelectedIndex = 1
+
+    def OnSelectAllViews(self, sender, args):
+        """
+        Обработчик кнопки "Выбрать все".
+        """
+        for i in range(self.lstViews.Items.Count):
+            self.lstViews.SetItemChecked(i, True)
+            name = self.lstViews.Items[i]
+            self.lstViewsChecked[name] = True
+
+    def OnDeselectAllViews(self, sender, args):
+        """
+        Обработчик кнопки "Снять выбор".
+        """
+        for i in range(self.lstViews.Items.Count):
+            self.lstViews.SetItemChecked(i, False)
+            name = self.lstViews.Items[i]
+            self.lstViewsChecked[name] = False
+
+    def OnSearchViewsTextChanged(self, sender, args):
+        """
+        Обработчик изменения текста поиска видов.
+        """
+        filter_text = sender.Text
+        self.UpdateViewsList(filter_text)
 
     def OnLoggingCheckedChanged(self, sender, args):
         """
@@ -369,25 +429,39 @@ class MainForm(Form):
             return
 
         self.PopulateTagFamilies()
+        self._programmatic_select = True
         self.tabControl.SelectedIndex = 2
 
     def OnNext3Click(self, sender, args):
+        self._programmatic_select = True
         self.tabControl.SelectedIndex = 3
 
     def OnNext4Click(self, sender, args):
         self.settings.orientation = TagOrientation.Horizontal if self.cmbOrientation.SelectedIndex == 0 else TagOrientation.Vertical
         self.settings.use_leader = self.chkUseLeader.Checked
         self.txtSummary.Text = self.GenerateSummary()
+        self._programmatic_select = True
         self.tabControl.SelectedIndex = 4
 
     def OnBack1Click(self, sender, args):
+        self._programmatic_select = True
         self.tabControl.SelectedIndex = 0
     def OnBack2Click(self, sender, args):
+        self._programmatic_select = True
         self.tabControl.SelectedIndex = 1
     def OnBack3Click(self, sender, args):
+        self._programmatic_select = True
         self.tabControl.SelectedIndex = 2
     def OnBack4Click(self, sender, args):
+        self._programmatic_select = True
         self.tabControl.SelectedIndex = 3
+
+    def OnTabSelecting(self, sender, args):
+        """
+        Обработчик выбора вкладки.
+        """
+        if not hasattr(self, '_programmatic_select') or not self._programmatic_select:
+            args.Cancel = True
 
     def CollectCategories(self):
         categories = [
