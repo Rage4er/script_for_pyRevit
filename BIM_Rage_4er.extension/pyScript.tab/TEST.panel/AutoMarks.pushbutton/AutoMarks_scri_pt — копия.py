@@ -13,6 +13,8 @@ from Autodesk.Revit.DB import *
 from System.Windows.Forms import *
 from System.Drawing import *
 import datetime
+import os
+import json
 
 # Константы
 MM_TO_FEET = 304.8
@@ -115,6 +117,7 @@ class MainForm(Form):
         views_dict (dict): Словарь видов.
         category_mapping (dict): Маппинг категорий.
         logger (Logger): Экземпляр логгера.
+        tag_defaults (dict): Словарь дефолтных марок по категориям.
     """
     def __init__(self, doc, uidoc):
         """
@@ -128,8 +131,11 @@ class MainForm(Form):
         self.uidoc = uidoc
         self.settings = TagSettings()
         self.views_dict = {}
+        self.all_views_dict = {}
+        self.lstViewsChecked = {}
         self.category_mapping = {}
         self.logger = Logger(self.settings.enable_logging)
+        self.tag_defaults = self.LoadTagDefaults()
 
         self.InitializeComponent()
         self.Load3DViews()
@@ -143,6 +149,7 @@ class MainForm(Form):
         self.StartPosition = FormStartPosition.CenterScreen
         self.tabControl = TabControl()
         self.tabControl.Dock = DockStyle.Fill
+        self.tabControl.Selecting += self.OnTabSelecting
 
         tabs = ["1. Выбор видов", "2. Категории", "3. Марки", "4. Настройки", "5. Выполнение"]
         for i, text in enumerate(tabs):
@@ -195,15 +202,23 @@ class MainForm(Form):
         Args:
             tab (TabPage): Вкладка для настройки.
         """
+        self.txtSearchViews = self.CreateControl(TextBox, Location=Point(120, 35), Size=Size(140, 20))
+        self.btnSelectAll = self.CreateButton(text="Выбрать все", location=Point(270, 35), size=Size(100, 25), click_handler=self.OnSelectAllViews)
+        self.btnDeselectAll = self.CreateButton(text="Снять выбор", location=Point(380, 35), size=Size(100, 25), click_handler=self.OnDeselectAllViews)
         controls = [
             self.CreateControl(Label, Text="Выберите 3D виды:", Location=Point(10, 10), Size=Size(300, 20)),
-            self.CreateControl(CheckedListBox, Location=Point(10, 40), Size=Size(600, 400), CheckOnClick=True),
-            self.CreateControl(CheckBox, Text="Включить логирование", Location=Point(10, 450), Size=Size(200, 20)),
-            self.CreateButton("Показать логи", Point(220, 450), Size(100, 25), self.OnShowLogsClick),
-            self.CreateButton("Далее →", Point(600, 450), click_handler=self.OnNext1Click)
+            self.CreateControl(Label, Text="Поиск:", Location=Point(70, 35), Size=Size(50, 20)),
+            self.txtSearchViews,
+            self.btnSelectAll,
+            self.btnDeselectAll,
+            self.CreateControl(CheckedListBox, Location=Point(10, 65), Size=Size(600, 360), CheckOnClick=True),
+            self.CreateControl(CheckBox, Text="Включить логирование", Location=Point(10, 440), Size=Size(200, 20)),
+            self.CreateButton(text="Показать логи", location=Point(220, 440), size=Size(100, 25), click_handler=self.OnShowLogsClick),
+            self.CreateButton(text="Далее →", location=Point(600, 440), click_handler=self.OnNext1Click)
         ]
-        self.lblViews, self.lstViews, self.chkLogging, self.btnShowLogs, self.btnNext1 = controls
+        self.lblViews, self.lblSearch, self.txtSearchViews, self.btnSelectAll, self.btnDeselectAll, self.lstViews, self.chkLogging, self.btnShowLogs, self.btnNext1 = controls[0], controls[1], controls[2], controls[3], controls[4], controls[5], controls[6], controls[7], controls[8]
         self.chkLogging.CheckedChanged += self.OnLoggingCheckedChanged
+        self.txtSearchViews.TextChanged += self.OnSearchViewsTextChanged
         for c in controls:
             tab.Controls.Add(c)
 
@@ -319,15 +334,35 @@ class MainForm(Form):
         try:
             views = FilteredElementCollector(self.doc).OfClass(View3D).WhereElementIsNotElementType().ToElements()
             self.lstViews.Items.Clear()
+            self.all_views_dict.clear()
+            self.views_dict.clear()
+            self.lstViewsChecked.clear()
             for view in views:
                 if not view.IsTemplate and view.CanBePrinted:
                     name = view.Name + " (ID: " + str(view.Id.IntegerValue) + ")"
-                    self.lstViews.Items.Add(name, False)
-                    self.views_dict[name] = view
+                    self.all_views_dict[name] = view
+                    self.lstViewsChecked[name] = False
+            self.UpdateViewsList("")  # Показать все
             if self.lstViews.Items.Count > 0:
                 self.lstViews.SetItemChecked(0, True)
+                self.lstViewsChecked[self.lstViews.Items[0]] = True
         except Exception as e:
             MessageBox.Show("Ошибка загрузки видов: " + str(e))
+
+    def UpdateViewsList(self, filter_text):
+        """
+        Обновляет список видов с фильтром.
+
+        Args:
+            filter_text (str): Текст фильтра.
+        """
+        self.lstViews.Items.Clear()
+        self.views_dict.clear()
+        filter_lower = filter_text.lower()
+        for name, view in self.all_views_dict.items():
+            if filter_lower in name.lower():
+                self.lstViews.Items.Add(name, self.lstViewsChecked.get(name, False))
+                self.views_dict[name] = view
 
     # Навигация
     def OnNext1Click(self, sender, args):
@@ -337,15 +372,44 @@ class MainForm(Form):
         self.settings.selected_views = []
         for i in range(self.lstViews.Items.Count):
             name = self.lstViews.Items[i]
-            if self.lstViews.GetItemChecked(i) and name in self.views_dict:
+            checked = self.lstViews.GetItemChecked(i)
+            if checked and name in self.views_dict:
                 self.settings.selected_views.append(self.views_dict[name])
+            self.lstViewsChecked[name] = checked
 
         if not self.settings.selected_views:
             MessageBox.Show("Выберите хотя бы один вид!")
             return
 
         self.CollectCategories()
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 1
+        self.tabControl.Selecting += self.OnTabSelecting
+
+    def OnSelectAllViews(self, sender, args):
+        """
+        Обработчик кнопки "Выбрать все".
+        """
+        for i in range(self.lstViews.Items.Count):
+            self.lstViews.SetItemChecked(i, True)
+            name = self.lstViews.Items[i]
+            self.lstViewsChecked[name] = True
+
+    def OnDeselectAllViews(self, sender, args):
+        """
+        Обработчик кнопки "Снять выбор".
+        """
+        for i in range(self.lstViews.Items.Count):
+            self.lstViews.SetItemChecked(i, False)
+            name = self.lstViews.Items[i]
+            self.lstViewsChecked[name] = False
+
+    def OnSearchViewsTextChanged(self, sender, args):
+        """
+        Обработчик изменения текста поиска видов.
+        """
+        filter_text = sender.Text
+        self.UpdateViewsList(filter_text)
 
     def OnLoggingCheckedChanged(self, sender, args):
         """
@@ -365,25 +429,45 @@ class MainForm(Form):
             return
 
         self.PopulateTagFamilies()
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 2
+        self.tabControl.Selecting += self.OnTabSelecting
 
     def OnNext3Click(self, sender, args):
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 3
+        self.tabControl.Selecting += self.OnTabSelecting
 
     def OnNext4Click(self, sender, args):
         self.settings.orientation = TagOrientation.Horizontal if self.cmbOrientation.SelectedIndex == 0 else TagOrientation.Vertical
         self.settings.use_leader = self.chkUseLeader.Checked
         self.txtSummary.Text = self.GenerateSummary()
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 4
+        self.tabControl.Selecting += self.OnTabSelecting
 
     def OnBack1Click(self, sender, args):
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 0
+        self.tabControl.Selecting += self.OnTabSelecting
     def OnBack2Click(self, sender, args):
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 1
+        self.tabControl.Selecting += self.OnTabSelecting
     def OnBack3Click(self, sender, args):
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 2
+        self.tabControl.Selecting += self.OnTabSelecting
     def OnBack4Click(self, sender, args):
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 3
+        self.tabControl.Selecting += self.OnTabSelecting
+
+    def OnTabSelecting(self, sender, args):
+        """
+        Обработчик выбора вкладки.
+        """
+        args.Cancel = True
 
     def CollectCategories(self):
         categories = [
@@ -428,11 +512,31 @@ class MainForm(Form):
         for category in self.settings.selected_categories:
             item = ListViewItem(self.GetCategoryName(category))
             item.Tag = category
+
+            # Попытаться найти сохраненную марку
+            cat_name = self.GetCategoryName(category)
+            default = self.tag_defaults.get(cat_name, {})
+            family_name = default.get("family")
+            type_name = default.get("type")
+
+            if family_name and type_name:
+                # Найти семейство и тип по имени
+                tag_family, tag_type = self.FindSavedTag(family_name, type_name)
+                if tag_family and tag_type:
+                    item.SubItems.Add(self.GetElementName(tag_family))
+                    item.SubItems.Add(self.GetElementName(tag_type))
+                    self.settings.category_tag_families[category] = tag_family
+                    self.settings.category_tag_types[category] = tag_type
+                    self.lstTagFamilies.Items.Add(item)
+                    continue
+
+            # Если не найдено, найти дефолтное
             tag_family, tag_type = self.FindTagForCategory(category)
 
             if tag_family and tag_type:
                 item.SubItems.Add(self.GetElementName(tag_family))
                 item.SubItems.Add(self.GetElementName(tag_type))
+                # Сохранить в settings
                 self.settings.category_tag_families[category] = tag_family
                 self.settings.category_tag_types[category] = tag_type
             else:
@@ -667,6 +771,9 @@ class MainForm(Form):
             trans.Dispose()
             self.logger.add("Транзакция завершена")
 
+        # Сохранить выбранные марки
+        self.SaveTagDefaults()
+
         result_msg = "Успешно расставлено марок: {0}".format(success_count)
         if errors:
             result_msg += "\n\nОшибки ({0}):\n".format(len(errors)) + "\n".join(errors[:10])
@@ -753,6 +860,73 @@ class MainForm(Form):
         """
         self.logger.show()
 
+    def LoadTagDefaults(self):
+        """
+        Загружает сохраненные дефолты марок из файла.
+
+        Returns:
+            dict: Словарь с марками по категориям.
+        """
+        config_path = self.GetConfigPath()
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                self.logger.add("Ошибка загрузки настроек марок: {0}".format(e))
+        return {}
+
+    def SaveTagDefaults(self):
+        """
+        Сохраняет выбранные марки в файл.
+        """
+        defaults = {}
+        for cat, family in self.settings.category_tag_families.items():
+            cat_name = self.GetCategoryName(cat)
+            family_name = self.GetElementName(family)
+            type_elem = self.settings.category_tag_types.get(cat)
+            type_name = self.GetElementName(type_elem) if type_elem else ""
+            if family_name and type_name:
+                defaults[cat_name] = {"family": family_name, "type": type_name}
+
+        config_path = self.GetConfigPath()
+        try:
+            with open(config_path, 'w') as f:
+                json.dump(defaults, f, ensure_ascii=True, indent=4)
+        except Exception as e:
+            self.logger.add("Ошибка сохранения настроек марок: {0}".format(e))
+
+    def FindSavedTag(self, family_name, type_name):
+        """
+        Находит семейство и тип по именам из сохраненных.
+
+        Args:
+            family_name (str): Имя семейства.
+            type_name (str): Имя типоразмера.
+
+        Returns:
+            tuple: (Family, FamilySymbol) или (None, None).
+        """
+        collector = FilteredElementCollector(self.doc).OfClass(Family)
+        for family in collector:
+            if self.GetElementName(family) == family_name:
+                symbol_ids = family.GetFamilySymbolIds()
+                for symbol_id in symbol_ids:
+                    symbol = self.doc.GetElement(symbol_id)
+                    if self.GetElementName(symbol) == type_name:
+                        return family, symbol
+        return None, None
+
+    def GetConfigPath(self):
+        """
+        Возвращает путь к файлу конфигурации.
+
+        Returns:
+            str: Путь к tag_defaults.json.
+        """
+        script_dir = os.path.dirname(__file__)
+        return os.path.join(script_dir, 'tag_defaults.json')
+
 # Форма выбора семейства марки
 class TagFamilySelectionForm(Form):
     """
@@ -823,6 +997,65 @@ class TagFamilySelectionForm(Form):
         # Выбор текущего или первого семейства
         if self.lstFamilies.Items.Count > 0:
             self.lstFamilies.SelectedIndex = 0
+
+    def GetElementName(self, element):
+        """
+        Получает имя элемента Revit.
+
+        Args:
+            element (Element): Элемент Revit.
+
+        Returns:
+            str: Имя элемента.
+        """
+        if not element:
+            return "Без имени"
+        try:
+            # Для FamilySymbol (типоразмеров)
+            if isinstance(element, FamilySymbol):
+                if hasattr(element, 'Name') and element.Name:
+                    name = element.Name
+                    if name and not name.startswith('IronPython'):
+                        return name
+
+                if hasattr(element, 'Family') and element.Family:
+                    family_name = element.Family.Name if hasattr(element.Family, 'Name') and element.Family.Name else ""
+
+                    # Пробуем получить имя типа через параметры
+                    type_name = ""
+                    for param_name in ["Тип", "Type Name", "Имя типа"]:
+                        param = element.LookupParameter(param_name)
+                        if param and param.HasValue:
+                            type_name = param.AsString()
+                            break
+
+                    if family_name and type_name:
+                        return family_name + " - " + type_name
+                    elif type_name:
+                        return type_name
+                    elif family_name:
+                        return family_name
+
+                return "Типоразмер " + str(element.Id.IntegerValue)
+
+            # Для Family (семейств)
+            elif isinstance(element, Family):
+                if hasattr(element, 'Name') and element.Name:
+                    name = element.Name
+                    if name and not name.startswith('IronPython'):
+                        return name
+                return "Семейство " + str(element.Id.IntegerValue)
+
+            # Общий случай
+            if hasattr(element, 'Name') and element.Name:
+                name = element.Name
+                if name and not name.startswith('IronPython'):
+                    return name
+
+        except Exception as e:
+            self.logger.add("GetElementName: Ошибка при получении имени элемента: {0}".format(e))
+
+        return "Элемент " + str(element.Id.IntegerValue)
 
     def GetElementNameImproved(self, element):
         """

@@ -150,7 +150,6 @@ class MainForm(Form):
         self.tabControl = TabControl()
         self.tabControl.Dock = DockStyle.Fill
         self.tabControl.Selecting += self.OnTabSelecting
-        self._programmatic_select = False
 
         tabs = ["1. Выбор видов", "2. Категории", "3. Марки", "4. Настройки", "5. Выполнение"]
         for i, text in enumerate(tabs):
@@ -383,8 +382,9 @@ class MainForm(Form):
             return
 
         self.CollectCategories()
-        self._programmatic_select = True
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 1
+        self.tabControl.Selecting += self.OnTabSelecting
 
     def OnSelectAllViews(self, sender, args):
         """
@@ -429,39 +429,45 @@ class MainForm(Form):
             return
 
         self.PopulateTagFamilies()
-        self._programmatic_select = True
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 2
+        self.tabControl.Selecting += self.OnTabSelecting
 
     def OnNext3Click(self, sender, args):
-        self._programmatic_select = True
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 3
+        self.tabControl.Selecting += self.OnTabSelecting
 
     def OnNext4Click(self, sender, args):
         self.settings.orientation = TagOrientation.Horizontal if self.cmbOrientation.SelectedIndex == 0 else TagOrientation.Vertical
         self.settings.use_leader = self.chkUseLeader.Checked
         self.txtSummary.Text = self.GenerateSummary()
-        self._programmatic_select = True
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 4
+        self.tabControl.Selecting += self.OnTabSelecting
 
     def OnBack1Click(self, sender, args):
-        self._programmatic_select = True
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 0
+        self.tabControl.Selecting += self.OnTabSelecting
     def OnBack2Click(self, sender, args):
-        self._programmatic_select = True
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 1
+        self.tabControl.Selecting += self.OnTabSelecting
     def OnBack3Click(self, sender, args):
-        self._programmatic_select = True
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 2
+        self.tabControl.Selecting += self.OnTabSelecting
     def OnBack4Click(self, sender, args):
-        self._programmatic_select = True
+        self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 3
+        self.tabControl.Selecting += self.OnTabSelecting
 
     def OnTabSelecting(self, sender, args):
         """
         Обработчик выбора вкладки.
         """
-        if not hasattr(self, '_programmatic_select') or not self._programmatic_select:
-            args.Cancel = True
+        args.Cancel = True
 
     def CollectCategories(self):
         categories = [
