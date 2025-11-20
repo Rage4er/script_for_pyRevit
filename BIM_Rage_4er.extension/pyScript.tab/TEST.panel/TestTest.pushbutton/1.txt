@@ -1,0 +1,354 @@
+Элементы на активном виде
+	получение текущего вида в активном документе
+		получаем элементы предопределенной категории "воздуховоды"
+			получаем ID каждого элемента
+
+Тип марки
+	получаем все типы семейств в документе
+		выбираем один тип семейства марки
+		получаем имя типа марки
+			находим разделитель в имени типа, заданный пользователем (по-умолчанию "_")
+			удаляем значение после разделителя, остается "Имя марки"
+
+Вычисляем длину полки для марки от выбранного параметра
+	получаем все имена параметров элементов предопределенной категории "воздуховоды"
+		пользователь выбирает один параметр
+		определяем значение выбранного параметра для каждого элемента предопределенной категории "воздуховоды"
+			определяем количество символов [а] в значении параметра 
+			вычисляем ([a]*1.6+1)
+			округляем до целых в большую сторону, получили "Длина полки"
+				сопоставляем в словарь "Длина полки" с ID элемента предопределенной категории "воздуховоды" соответствущего
+
+Объединяем ["Имя марки"] + ["Длина полки"], получаем имена типа марок
+	оставляем уникальные результаты
+	проверяем также существующие имена типа марок
+		оставляем только те, которых ранее не было
+			сопоставляем в словарь по "Длина полки" с ID элемента предопределенной категории "воздуховоды" соответствущего
+
+Копируем тип семейства марки
+	назначаем имя типа ["Имя марки"] + ["Длина полки"]
+	назначаем параметру типа (Длина полки) значение "Длина полки"
+	
+Группирование по участкам
+	получаем значение параметра "Имя системы" каждого элементы предопределенной категории "воздуховоды"
+		группируем по значению параметра
+		получаем значение параметра "Сечение" каждого элементы предопределенной категории "воздуховоды" 
+			группируем по значению параметра
+			определяем наибольший по длине экземпляр в каждой подгруппе {"Имя системы"->"Сечение"->"Длина"}, определяем его ID
+				
+Создаем марки на виде
+	определяем местополежение наибольшего по длине экземпляра из подгрупп предопределенной категории "воздуховоды"
+		определяем центр каждого из элементов
+		берем ранее выбиранный один тип семейства марки 
+		и далее есть скрипт для создания марок на основе этих значений 
+		///
+		#Copyright(c) 2015, Konrad K Sobon
+# @arch_laboratory, http://archi-lab.net
+#This node is an update to Create Annotation Tag node that can be found in archi-lab package. Thanks to Konrad K Sobon for making the original one.
+# Ability to tag Linked elements by Alban de Chasteigner
+
+import clr
+# Import RevitAPI
+clr.AddReference("RevitAPI")
+import Autodesk
+from Autodesk.Revit.DB import *
+# Import Element wrapper extension methods
+clr.AddReference("RevitNodes")
+import Revit
+# Import geometry conversion extension methods
+clr.ImportExtensions(Revit.GeometryConversion)
+
+import sys
+sys.path.append(r"C:\Program Files (x86)\IronPython 2.7\Lib")
+
+# Import DocumentManager and TransactionManager
+clr.AddReference("RevitServices")
+import RevitServices
+from RevitServices.Persistence import DocumentManager
+from RevitServices.Transactions import TransactionManager
+doc = DocumentManager.Instance.CurrentDBDocument
+uiapp = DocumentManager.Instance.CurrentUIApplication
+app = uiapp.Application
+version=int(app.VersionNumber)
+
+views = UnwrapElement(IN[0])
+elements = UnwrapElement(IN[1]) if isinstance(IN[1],list) else [UnwrapElement(IN[1])]
+locationPts = UnwrapElement(IN[2]) if isinstance(IN[2],list) else [UnwrapElement(IN[2])]
+tagType = UnwrapElement(IN[3])
+
+tagOrientation = IN[4]
+if tagOrientation == True :
+	tagOrientation = TagOrientation.Horizontal
+	spTagOrientation = SpatialElementTagOrientation.Horizontal
+elif tagOrientation == False :
+	tagOrientation = TagOrientation.Vertical
+	spTagOrientation = SpatialElementTagOrientation.Vertical
+
+leader = IN[5]
+
+if IN[6] != None:
+	link = UnwrapElement(IN[6])
+else:
+	link = None
+	
+RunIt = IN[7]
+
+#ueWrapper from Dimitar Venkov
+ueWrapper = None
+wrappers = clr.GetClrType(Revit.Elements.ElementWrapper).GetMethods()
+for w in wrappers:
+	if w.ToString().startswith("Revit.Elements.UnknownElement"):
+		ueWrapper = w
+		break
+				
+def toRvtPoint(point):
+	return point.ToXyz()
+
+def toRvtId(_id):
+	if isinstance(_id, int) or isinstance(_id, str):
+		id = ElementId(int(_id))
+		return id
+	elif isinstance(_id, ElementId):
+		return _id
+
+tagTypeId = toRvtId(tagType.Id)
+chk = []
+try:
+	errorReport = None
+	if RunIt:
+		if tagType.Category.Id == ElementId(BuiltInCategory.OST_RoomTags):
+			roomTags = []
+			if isinstance(IN[0], list):
+				for j in views:
+					for i,k in zip(elements, locationPts):
+						TransactionManager.Instance.EnsureInTransaction(doc)
+						#added the if statement to get roomId from the linked element.
+						if link != None:
+							roomId = LinkElementId(link.Id, i.Id)
+						else:
+							roomId = LinkElementId(i.Id)
+						location = Autodesk.Revit.DB.UV(toRvtPoint(k).X, toRvtPoint(k).Y)
+						roomTag = doc.Create.NewRoomTag(roomId, location, j.Id)
+						roomTag.RoomTagType = tagType
+						roomTag.TagOrientation = spTagOrientation
+						roomTag.HasLeader = leader
+						chk.append(roomId)
+						roomTags.append(roomTag)
+						TransactionManager.Instance.TransactionTaskDone()
+			else:
+				TransactionManager.Instance.EnsureInTransaction(doc)
+				for i, j in zip(elements, locationPts):
+					if link != None:
+						roomId = LinkElementId(link.Id, i.Id)
+					else:
+						roomId = LinkElementId(i.Id)
+					location = Autodesk.Revit.DB.UV(toRvtPoint(j).X, toRvtPoint(j).Y)
+					roomTag = doc.Create.NewRoomTag(roomId, location, views.Id)
+					roomTag.RoomTagType = tagType
+					roomTag.TagOrientation = spTagOrientation
+					roomTag.HasLeader = leader
+					roomTags.append(roomTag)
+				TransactionManager.Instance.TransactionTaskDone()
+			result = roomTags
+		elif tagType.Category.Id == ElementId(BuiltInCategory.OST_MEPSpaceTags):
+			TransactionManager.Instance.EnsureInTransaction(doc)
+			roomTags = []
+			if isinstance(IN[0], list):
+				for j in views:
+					for i,k in zip(elements, locationPts):
+						location = Autodesk.Revit.DB.UV(toRvtPoint(k).X, toRvtPoint(k).Y)
+						spaceTag = doc.Create.NewSpaceTag(i, location, j)
+						spaceTag.SpaceTagType = tagType
+						spaceTag.TagOrientation = spTagOrientation
+						spaceTag.HasLeader = leader
+						roomTags.append(spaceTag)
+			else:
+				for i, j in zip(elements, locationPts):
+					location = Autodesk.Revit.DB.UV(toRvtPoint(j).X, toRvtPoint(j).Y)
+					spaceTag = doc.Create.NewSpaceTag(i,location, views)
+					spaceTag.SpaceTagType = tagType
+					spaceTag.TagOrientation = spTagOrientation
+					spaceTag.HasLeader = leader
+					roomTags.append(spaceTag)
+			TransactionManager.Instance.TransactionTaskDone()
+			result = roomTags
+		elif tagType.Category.Id == ElementId(BuiltInCategory.OST_AreaTags):
+			TransactionManager.Instance.EnsureInTransaction(doc)
+			roomTags = []
+			if isinstance(IN[0], list):
+				for j in views:
+					for i,k in zip(elements, locationPts):
+						location = Autodesk.Revit.DB.UV(toRvtPoint(k).X, toRvtPoint(k).Y)
+						areaTag = doc.Create.NewAreaTag(j,i, location)
+						areaTag.AreaTagType = tagType
+						areaTag.TagOrientation = spTagOrientation
+						areaTag.HasLeader = leader
+						roomTags.append(areaTag)
+			else:
+				for i, j in zip(elements, locationPts):
+					location = Autodesk.Revit.DB.UV(toRvtPoint(j).X, toRvtPoint(j).Y)
+					areaTag = doc.Create.NewAreaTag(views,i,location)
+					areaTag.AreaTagType = tagType
+					areaTag.TagOrientation = spTagOrientation
+					areaTag.HasLeader = leader
+					roomTags.append(areaTag)
+			TransactionManager.Instance.TransactionTaskDone()
+			result = roomTags
+		elif tagType.Category.Id == ElementId(BuiltInCategory.OST_MultiCategoryTags):
+			TransactionManager.Instance.EnsureInTransaction(doc)
+			multitags = []
+			if isinstance(IN[0], list):
+				for j in views:
+					for i,k in zip(elements, locationPts):
+						if link != None:
+							reference = Reference(i).CreateLinkReference(link)
+						else:
+							reference = Reference(i)
+						location = toRvtPoint(k)
+						tag = IndependentTag.Create(doc,j.Id, reference, 	leader, TagMode.TM_ADDBY_MULTICATEGORY, 	tagOrientation, location)
+						tag.ChangeTypeId(tagTypeId)
+						if link == None:
+							multitags.append(tag)
+						else:
+							multitags.append(ueWrapper.Invoke(None,(tag, True)))
+			else:
+				for i, j in zip(elements, locationPts):
+					if link != None:
+						reference = Reference(i).CreateLinkReference(link)
+					else:
+						reference = Reference(i)
+					location = toRvtPoint(j)
+					tag = IndependentTag.Create(doc, views.Id, reference, leader, TagMode.TM_ADDBY_MULTICATEGORY, tagOrientation, location)
+					tag.ChangeTypeId(tagTypeId)
+					if link == None:
+						multitags.append(tag)
+					else:
+						multitags.append(ueWrapper.Invoke(None,(tag, True)))
+			TransactionManager.Instance.TransactionTaskDone()
+			result = multitags
+		elif tagType.Category.Id == ElementId(BuiltInCategory.OST_MaterialTags):
+			TransactionManager.Instance.EnsureInTransaction(doc)
+			Mattags = []
+			if isinstance(IN[0], list):
+				for j in views:
+					for i,k in zip(elements, locationPts):
+						if link != None:
+							reference = Reference(i).CreateLinkReference(link)
+						else:
+							reference = Reference(i)
+						location = toRvtPoint(k)
+						tag = IndependentTag.Create(doc, j.Id, reference, leader, TagMode.TM_ADDBY_MATERIAL, tagOrientation, location)
+						tag.ChangeTypeId(tagTypeId)
+						if link == None:
+							Mattags.append(tag)
+						else:
+							Mattags.append(ueWrapper.Invoke(None,(tag, True)))
+			else:
+				for i, j in zip(elements, locationPts):
+					if link != None:
+						reference = Reference(i).CreateLinkReference(link)
+					else:
+						reference = Reference(i)
+					location = toRvtPoint(j)
+					tag = IndependentTag.Create(doc, views.Id, reference, leader, TagMode.TM_ADDBY_MATERIAL, tagOrientation, location)
+					tag.ChangeTypeId(tagTypeId)
+					if link == None:
+						Mattags.append(tag)
+					else:
+						Mattags.append(ueWrapper.Invoke(None,(tag, True)))
+			TransactionManager.Instance.TransactionTaskDone()
+			result = Mattags
+		elif tagType.Category.Id == ElementId(BuiltInCategory.OST_RebarTags) and version >= 2023:
+			TransactionManager.Instance.EnsureInTransaction(doc)
+			tags = []
+			if isinstance(IN[0], list):
+				for j in views:
+					for i,k in zip(elements, locationPts):
+						subelement = i.GetSubelements()[0]
+						if link != None:
+							reference = subelement.GetReference().CreateLinkReference(link)
+						else:
+							reference = subelement.GetReference()
+						location = toRvtPoint(k)
+						tag = IndependentTag.Create(doc, j.Id, reference, leader, TagMode.TM_ADDBY_CATEGORY, tagOrientation, location)
+						tag.ChangeTypeId(tagTypeId)
+						if link == None:
+							tags.append(tag)
+						else:
+							tags.append(ueWrapper.Invoke(None,(tag, True)))
+				TransactionManager.Instance.TransactionTaskDone()
+				result = tags
+			else:
+				for i, j in zip(elements, locationPts):
+					subelement = i.GetSubelements()[0]
+					if link != None:
+						reference = subelement.GetReference().CreateLinkReference(link)
+					else:
+						reference = subelement.GetReference()
+					location = toRvtPoint(j)
+					tag = IndependentTag.Create(doc, views.Id, reference, leader, TagMode.TM_ADDBY_CATEGORY, tagOrientation, location)
+					tag.ChangeTypeId(tagTypeId)
+					if link == None:
+						tags.append(tag)
+					else:
+						tags.append(ueWrapper.Invoke(None,(tag, True)))
+			TransactionManager.Instance.TransactionTaskDone()
+			result = tags
+		else:
+			TransactionManager.Instance.EnsureInTransaction(doc)
+			tags = []
+			if isinstance(IN[0], list):
+				for j in views:
+					for i,k in zip(elements, locationPts):
+						if link != None:
+							reference = Reference(i).CreateLinkReference(link)
+						else:
+							reference = Reference(i)
+						location = toRvtPoint(k)
+						tag = IndependentTag.Create(doc, j.Id, reference, leader, TagMode.TM_ADDBY_CATEGORY, tagOrientation, location)
+						tag.ChangeTypeId(tagTypeId)
+						if link == None:
+							tags.append(tag)
+						else:
+							tags.append(ueWrapper.Invoke(None,(tag, True)))
+			else:
+				for i, j in zip(elements, locationPts):
+					if link != None:
+						reference = Reference(i).CreateLinkReference(link)
+					else:
+						reference = Reference(i)
+					location = toRvtPoint(j)
+					tag = IndependentTag.Create(doc, views.Id, reference, leader, TagMode.TM_ADDBY_CATEGORY, tagOrientation, location)
+					tag.ChangeTypeId(tagTypeId)
+					if link == None:
+						tags.append(tag)
+					else:
+						tags.append(ueWrapper.Invoke(None,(tag, True)))
+			TransactionManager.Instance.TransactionTaskDone()
+			result = tags
+	else:
+		result = "RunIt is set to False."
+except:
+	# if error accurs anywhere in the process catch it
+	import traceback
+	errorReport = traceback.format_exc()
+
+#Assign your output to the OUT variable
+if errorReport == None:
+	OUT = result
+else:
+	OUT = errorReport
+	///
+
+	
+Сопоставляем тип марки с элементом
+	наибольший по длине экземпляр в каждой подгруппе по ID сопоставляем с соответсвующими именами типа марок ранее определенных существующих и с новыми именами копий
+	
+Меняем марки на виде
+	все марки на виде созданные скриптом выбираем
+		меняем параметр "Тип" на Сопоставленный тип марки с элементом
+		
+		
+		
+В итоге получаем марки воздуховодов с длиной полки равной длине значения выбранного параметра (расчитанное), маркируем только воздуховоды с отличительными характеристиками, ревит сам определяет параметр "Сечение", два воздуховода с одинаковым значением "Сечение" и "Имя системы" не маркируются. 
+Вопросы?
