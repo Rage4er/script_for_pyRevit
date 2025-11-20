@@ -13,8 +13,6 @@ from Autodesk.Revit.DB import *
 from System.Windows.Forms import *
 from System.Drawing import *
 import datetime
-import os
-import json
 
 # Константы
 MM_TO_FEET = 304.8
@@ -117,7 +115,6 @@ class MainForm(Form):
         views_dict (dict): Словарь видов.
         category_mapping (dict): Маппинг категорий.
         logger (Logger): Экземпляр логгера.
-        tag_defaults (dict): Словарь дефолтных марок по категориям.
     """
     def __init__(self, doc, uidoc):
         """
@@ -133,7 +130,6 @@ class MainForm(Form):
         self.views_dict = {}
         self.category_mapping = {}
         self.logger = Logger(self.settings.enable_logging)
-        self.tag_defaults = self.LoadTagDefaults()
 
         self.InitializeComponent()
         self.Load3DViews()
@@ -432,31 +428,11 @@ class MainForm(Form):
         for category in self.settings.selected_categories:
             item = ListViewItem(self.GetCategoryName(category))
             item.Tag = category
-
-            # Попытаться найти сохраненную марку
-            cat_name = self.GetCategoryName(category)
-            default = self.tag_defaults.get(cat_name, {})
-            family_name = default.get("family")
-            type_name = default.get("type")
-
-            if family_name and type_name:
-                # Найти семейство и тип по имени
-                tag_family, tag_type = self.FindSavedTag(family_name, type_name)
-                if tag_family and tag_type:
-                    item.SubItems.Add(self.GetElementName(tag_family))
-                    item.SubItems.Add(self.GetElementName(tag_type))
-                    self.settings.category_tag_families[category] = tag_family
-                    self.settings.category_tag_types[category] = tag_type
-                    self.lstTagFamilies.Items.Add(item)
-                    continue
-
-            # Если не найдено, найти дефолтное
             tag_family, tag_type = self.FindTagForCategory(category)
 
             if tag_family and tag_type:
                 item.SubItems.Add(self.GetElementName(tag_family))
                 item.SubItems.Add(self.GetElementName(tag_type))
-                # Сохранить в settings
                 self.settings.category_tag_families[category] = tag_family
                 self.settings.category_tag_types[category] = tag_type
             else:
@@ -691,9 +667,6 @@ class MainForm(Form):
             trans.Dispose()
             self.logger.add("Транзакция завершена")
 
-        # Сохранить выбранные марки
-        self.SaveTagDefaults()
-
         result_msg = "Успешно расставлено марок: {0}".format(success_count)
         if errors:
             result_msg += "\n\nОшибки ({0}):\n".format(len(errors)) + "\n".join(errors[:10])
@@ -780,73 +753,6 @@ class MainForm(Form):
         """
         self.logger.show()
 
-    def LoadTagDefaults(self):
-        """
-        Загружает сохраненные дефолты марок из файла.
-
-        Returns:
-            dict: Словарь с марками по категориям.
-        """
-        config_path = self.GetConfigPath()
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                self.logger.add("Ошибка загрузки настроек марок: {0}".format(e))
-        return {}
-
-    def SaveTagDefaults(self):
-        """
-        Сохраняет выбранные марки в файл.
-        """
-        defaults = {}
-        for cat, family in self.settings.category_tag_families.items():
-            cat_name = self.GetCategoryName(cat)
-            family_name = self.GetElementName(family)
-            type_elem = self.settings.category_tag_types.get(cat)
-            type_name = self.GetElementName(type_elem) if type_elem else ""
-            if family_name and type_name:
-                defaults[cat_name] = {"family": family_name, "type": type_name}
-
-        config_path = self.GetConfigPath()
-        try:
-            with open(config_path, 'w') as f:
-                json.dump(defaults, f, ensure_ascii=True, indent=4)
-        except Exception as e:
-            self.logger.add("Ошибка сохранения настроек марок: {0}".format(e))
-
-    def FindSavedTag(self, family_name, type_name):
-        """
-        Находит семейство и тип по именам из сохраненных.
-
-        Args:
-            family_name (str): Имя семейства.
-            type_name (str): Имя типоразмера.
-
-        Returns:
-            tuple: (Family, FamilySymbol) или (None, None).
-        """
-        collector = FilteredElementCollector(self.doc).OfClass(Family)
-        for family in collector:
-            if self.GetElementName(family) == family_name:
-                symbol_ids = family.GetFamilySymbolIds()
-                for symbol_id in symbol_ids:
-                    symbol = self.doc.GetElement(symbol_id)
-                    if self.GetElementName(symbol) == type_name:
-                        return family, symbol
-        return None, None
-
-    def GetConfigPath(self):
-        """
-        Возвращает путь к файлу конфигурации.
-
-        Returns:
-            str: Путь к tag_defaults.json.
-        """
-        script_dir = os.path.dirname(__file__)
-        return os.path.join(script_dir, 'tag_defaults.json')
-
 # Форма выбора семейства марки
 class TagFamilySelectionForm(Form):
     """
@@ -917,65 +823,6 @@ class TagFamilySelectionForm(Form):
         # Выбор текущего или первого семейства
         if self.lstFamilies.Items.Count > 0:
             self.lstFamilies.SelectedIndex = 0
-
-    def GetElementName(self, element):
-        """
-        Получает имя элемента Revit.
-
-        Args:
-            element (Element): Элемент Revit.
-
-        Returns:
-            str: Имя элемента.
-        """
-        if not element:
-            return "Без имени"
-        try:
-            # Для FamilySymbol (типоразмеров)
-            if isinstance(element, FamilySymbol):
-                if hasattr(element, 'Name') and element.Name:
-                    name = element.Name
-                    if name and not name.startswith('IronPython'):
-                        return name
-
-                if hasattr(element, 'Family') and element.Family:
-                    family_name = element.Family.Name if hasattr(element.Family, 'Name') and element.Family.Name else ""
-
-                    # Пробуем получить имя типа через параметры
-                    type_name = ""
-                    for param_name in ["Тип", "Type Name", "Имя типа"]:
-                        param = element.LookupParameter(param_name)
-                        if param and param.HasValue:
-                            type_name = param.AsString()
-                            break
-
-                    if family_name and type_name:
-                        return family_name + " - " + type_name
-                    elif type_name:
-                        return type_name
-                    elif family_name:
-                        return family_name
-
-                return "Типоразмер " + str(element.Id.IntegerValue)
-
-            # Для Family (семейств)
-            elif isinstance(element, Family):
-                if hasattr(element, 'Name') and element.Name:
-                    name = element.Name
-                    if name and not name.startswith('IronPython'):
-                        return name
-                return "Семейство " + str(element.Id.IntegerValue)
-
-            # Общий случай
-            if hasattr(element, 'Name') and element.Name:
-                name = element.Name
-                if name and not name.startswith('IronPython'):
-                    return name
-
-        except Exception as e:
-            self.logger.add("GetElementName: Ошибка при получении имени элемента: {0}".format(e))
-
-        return "Элемент " + str(element.Id.IntegerValue)
 
     def GetElementNameImproved(self, element):
         """
