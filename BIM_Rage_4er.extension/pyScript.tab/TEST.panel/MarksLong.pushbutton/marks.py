@@ -94,6 +94,21 @@ class MainForm(Form):
         self.lstTagFamilies.Columns.Add("Типоразмер марки", 250)
         self.lstTagFamilies.Columns.Add("Длина полки (мм)", 100)
 
+        self.lblStatusTab2 = self.CreateControl(
+            Label,
+            Text="",
+            Location=Point(10, 450),
+            Size=Size(300, 20),
+        )
+
+        self.btnDuplicate = self.CreateControl(
+            Button,
+            Text="Дублировать марку",
+            Location=Point(350, 450),
+            Size=Size(120, 25),
+        )
+        self.btnDuplicate.Click += self.OnDuplicateClick
+
         controls = [
             self.CreateControl(
                 Label,
@@ -102,6 +117,8 @@ class MainForm(Form):
                 Size=Size(400, 20),
             ),
             self.lstTagFamilies,
+            self.lblStatusTab2,
+            self.btnDuplicate,
             self.CreateControl(
                 Button, Text="← Назад", Location=Point(500, 450), Size=Size(80, 25)
             ),
@@ -109,7 +126,7 @@ class MainForm(Form):
                 Button, Text="Далее →", Location=Point(600, 450), Size=Size(80, 25)
             ),
         ]
-        self.btnBack1, self.btnNext2 = controls[2], controls[3]
+        self.btnBack1, self.btnNext2 = controls[4], controls[5]
         self.btnBack1.Click += self.OnBack1Click
         self.btnNext2.Click += self.OnNext2Click
 
@@ -171,6 +188,49 @@ class MainForm(Form):
         self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 0
         self.tabControl.Selecting += self.OnTabSelecting
+
+    def OnDuplicateClick(self, sender, args):
+        selected_items = []
+        for item in self.lstTagFamilies.Items:
+            if item.Checked:
+                selected_items.append(item)
+
+        if not selected_items:
+            self.lblStatusTab2.Text = "Выберите марку для дублирования!"
+            return
+
+        trans = Transaction(self.doc, "Дублирование марок")
+        duplicated_count = 0
+        try:
+            trans.Start()
+            for selected_item in selected_items:
+                tag_type = selected_item.Tag
+                if not isinstance(tag_type, FamilySymbol):
+                    continue
+
+                name_param = tag_type.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+                if name_param and name_param.HasValue:
+                    symbol_name = name_param.AsString()
+                else:
+                    symbol_name = tag_type.Name
+
+                new_name = (
+                    symbol_name
+                    + "_копия_"
+                    + datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    + "_"
+                    + str(duplicated_count + 1)
+                )
+                new_symbol = tag_type.Duplicate(new_name)
+                duplicated_count += 1
+            trans.Commit()
+            self.lblStatusTab2.Text = "Дублировано {0} марок.".format(duplicated_count)
+        except Exception as e:
+            if trans.GetStatus() == TransactionStatus.Started:
+                trans.RollBack()
+            self.lblStatusTab2.Text = "Ошибка дублирования: {0}".format(e)
+        finally:
+            trans.Dispose()
 
     def OnBack2Click(self, sender, args):
         self.tabControl.Selecting -= self.OnTabSelecting
@@ -334,105 +394,6 @@ class MainForm(Form):
             pass
 
         return "Элемент " + str(element.Id.IntegerValue)
-
-    def OnDuplicateClick(self, sender, args):
-        selected_items = []
-        for item in self.lstTagFamilies.Items:
-            if item.Checked:
-                selected_items.append(item)
-
-        if not selected_items:
-            self.lblStatusTab2.Text = "Выберите марку для дублирования!"
-            return
-
-        selected_item = selected_items[0]
-        category = selected_item.Tag
-        tag_type = self.settings.category_tag_types.get(category)
-        if not tag_type:
-            self.lblStatusTab2.Text = "Для этой категории не выбрана марка!"
-            return
-
-        if not isinstance(tag_type, FamilySymbol):
-            self.lblStatusTab2.Text = "Неверный тип марки: не FamilySymbol"
-            return
-
-        trans = Transaction(self.doc, "Дублирование марки")
-        try:
-            name_param = tag_type.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
-            if name_param and name_param.HasValue:
-                symbol_name = name_param.AsString()
-            else:
-                symbol_name = tag_type.Name
-
-            new_name = (
-                symbol_name
-                + "_копия_"
-                + datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            )
-            trans.Start()
-            new_symbol = tag_type.Duplicate(new_name)
-            trans.Commit()
-            self.lblStatusTab2.Text = "Марка '{0}' дублирована как '{1}'.".format(
-                symbol_name, new_name
-            )
-        except Exception as e:
-            if trans.GetStatus() == TransactionStatus.Started:
-                trans.RollBack()
-            self.lblStatusTab2.Text = "Ошибка дублирования: {0}".format(e)
-        finally:
-            trans.Dispose()
-
-    def OnDuplicateClick(self, sender, args):
-        if self.lstTagFamilies.SelectedItems.Count == 0:
-            MessageBox.Show("Выберите марку для дублирования!")
-            return
-        selected = self.lstTagFamilies.SelectedItems[0]
-        category = selected.Tag
-        tag_type = self.settings.category_tag_types.get(category)
-        if not tag_type:
-            MessageBox.Show("Для этой категории не выбрана марка!")
-            return
-
-        # Дублировать типоразмер
-        trans = Transaction(self.doc, "Дублирование марки")
-        trans.Start()
-        try:
-            new_name = tag_type.Name + "_копия"
-            new_symbol = tag_type.Duplicate(new_name)
-            trans.Commit()
-            MessageBox.Show(
-                "Марка '{0}' дублирована как '{1}'.".format(tag_type.Name, new_name)
-            )
-        except Exception as e:
-            trans.RollBack()
-            MessageBox.Show("Ошибка дублирования: {0}".format(e))
-        finally:
-            trans.Dispose()
-
-    def OnTagFamilyDoubleClick(self, sender, args):
-        if self.lstTagFamilies.SelectedItems.Count == 0:
-            return
-        selected = self.lstTagFamilies.SelectedItems[0]
-        category = selected.Tag
-
-        available_families = self.GetAvailableTagFamiliesForCategory(category)
-
-        if available_families:
-            current_family = self.settings.category_tag_families.get(category)
-            current_type = self.settings.category_tag_types.get(category)
-
-            form = TagFamilySelectionForm(
-                self.doc, available_families, current_family, current_type
-            )
-            if (
-                form.ShowDialog() == DialogResult.OK
-                and form.SelectedFamily
-                and form.SelectedType
-            ):
-                selected.SubItems[1].Text = self.GetElementName(form.SelectedFamily)
-                selected.SubItems[2].Text = self.GetElementName(form.SelectedType)
-                self.settings.category_tag_families[category] = form.SelectedFamily
-                self.settings.category_tag_types[category] = form.SelectedType
 
     def GetAvailableTagFamiliesForCategory(self, category):
         tag_category_id = self.GetTagCategoryId(category)
