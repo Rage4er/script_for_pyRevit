@@ -22,8 +22,7 @@ MM_TO_FEET = 304.8
 class TagSettings(object):
     def __init__(self):
         self.selected_categories = []
-        self.category_tag_families = {}
-        self.category_tag_types = {}
+        self.selected_tag_types = []
 
 
 class MainForm(Form):
@@ -89,28 +88,20 @@ class MainForm(Form):
         self.lstTagFamilies.View = View.Details
         self.lstTagFamilies.FullRowSelect = True
         self.lstTagFamilies.GridLines = True
-        self.lstTagFamilies.Columns.Add("Категория", 180)
+        self.lstTagFamilies.CheckBoxes = True
+        self.lstTagFamilies.Columns.Add("Категория", 150)
         self.lstTagFamilies.Columns.Add("Семейство марки", 200)
-        self.lstTagFamilies.Columns.Add("Типоразмер марки", 300)
-        self.lstTagFamilies.DoubleClick += self.OnTagFamilyDoubleClick
-
-        self.btnDuplicate = self.CreateControl(
-            Button,
-            Text="Дублировать марку",
-            Location=Point(350, 450),
-            Size=Size(120, 25),
-        )
-        self.btnDuplicate.Click += self.OnDuplicateClick
+        self.lstTagFamilies.Columns.Add("Типоразмер марки", 250)
+        self.lstTagFamilies.Columns.Add("Длина полки (мм)", 100)
 
         controls = [
             self.CreateControl(
                 Label,
-                Text="Выберите марки для категорий:",
+                Text="Выберите типоразмеры марок:",
                 Location=Point(10, 10),
                 Size=Size(400, 20),
             ),
             self.lstTagFamilies,
-            self.btnDuplicate,
             self.CreateControl(
                 Button, Text="← Назад", Location=Point(500, 450), Size=Size(80, 25)
             ),
@@ -118,7 +109,7 @@ class MainForm(Form):
                 Button, Text="Далее →", Location=Point(600, 450), Size=Size(80, 25)
             ),
         ]
-        self.btnBack1, self.btnNext2 = controls[3], controls[4]
+        self.btnBack1, self.btnNext2 = controls[2], controls[3]
         self.btnBack1.Click += self.OnBack1Click
         self.btnNext2.Click += self.OnNext2Click
 
@@ -164,6 +155,13 @@ class MainForm(Form):
         self.tabControl.Selecting += self.OnTabSelecting
 
     def OnNext2Click(self, sender, args):
+        self.settings.selected_tag_types = []
+        for item in self.lstTagFamilies.Items:
+            if item.Checked:
+                self.settings.selected_tag_types.append(item.Tag)
+        if not self.settings.selected_tag_types:
+            MessageBox.Show("Выберите хотя бы один типоразмер марки!")
+            return
         self.txtSummary.Text = self.GenerateSummary()
         self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 2
@@ -225,21 +223,20 @@ class MainForm(Form):
     def PopulateTagFamilies(self):
         self.lstTagFamilies.Items.Clear()
         for category in self.settings.selected_categories:
-            item = ListViewItem(self.GetCategoryName(category))
-            item.Tag = category
-
-            tag_family, tag_type = self.FindTagForCategory(category)
-
-            if tag_family and tag_type:
-                item.SubItems.Add(self.GetElementName(tag_family))
-                item.SubItems.Add(self.GetElementName(tag_type))
-                self.settings.category_tag_families[category] = tag_family
-                self.settings.category_tag_types[category] = tag_type
-            else:
-                item.SubItems.Add("Нет подходящих марок")
-                item.SubItems.Add("")
-
-            self.lstTagFamilies.Items.Add(item)
+            available_families = self.GetAvailableTagFamiliesForCategory(category)
+            for family in available_families:
+                symbol_ids = family.GetFamilySymbolIds()
+                for symbol_id in symbol_ids:
+                    symbol = self.doc.GetElement(symbol_id)
+                    if symbol and symbol.IsActive:
+                        item = ListViewItem(self.GetCategoryName(category))
+                        item.SubItems.Add(self.GetElementName(family))
+                        item.SubItems.Add(self.GetElementName(symbol))
+                        shelf_length = self.GetShelfLength(symbol)
+                        item.SubItems.Add(str(shelf_length))
+                        item.Tag = symbol
+                        item.Checked = False  # Optionally uncheck
+                        self.lstTagFamilies.Items.Add(item)
 
     def FindTagForCategory(self, category):
         tag_category_id = self.GetTagCategoryId(category)
@@ -460,30 +457,28 @@ class MainForm(Form):
         return available_families
 
     def GenerateSummary(self):
-        summary = "СВОДКА ПО МАРКАМ И ДЛИНАМ ПОЛОК:\r\n\r\n"
+        summary = "СВОДКА ПО ВЫБРАННЫМ ТИПОРАЗМЕРАМ МАРОК И ДЛИНАМ ПОЛОК:\r\n\r\n"
         summary += (
-            "Выбрано категорий: "
-            + str(len(self.settings.selected_categories))
+            "Выбрано типоразмеров: "
+            + str(len(self.settings.selected_tag_types))
             + "\r\n\r\n"
         )
 
-        summary += "Детали по категориям и длинам полок:\r\n"
-        for category in self.settings.selected_categories:
-            tag_family = self.settings.category_tag_families.get(category)
-            tag_type = self.settings.category_tag_types.get(category)
-            if tag_family and tag_type:
-                shelf_length = self.GetShelfLength(tag_type)
-                status = (
-                    self.GetElementName(tag_family)
-                    + " ("
-                    + self.GetElementName(tag_type)
-                    + ") - Длина полки: "
-                    + str(shelf_length)
-                    + " мм"
-                )
-            else:
-                status = "НЕТ МАРКИ"
-            summary += "- " + self.GetCategoryName(category) + ": " + status + "\r\n"
+        summary += "Детали:\r\n"
+        for tag_type in self.settings.selected_tag_types:
+            shelf_length = self.GetShelfLength(tag_type)
+            category_name = self.GetCategoryName(tag_type.Category)
+            summary += (
+                "- Категория: "
+                + category_name
+                + ", Семейство: "
+                + tag_type.Family.Name
+                + ", Типоразмер: "
+                + self.GetElementName(tag_type)
+                + " - Длина полки: "
+                + str(shelf_length)
+                + " мм\r\n"
+            )
         return summary
 
     def GetShelfLength(self, tag_type):
