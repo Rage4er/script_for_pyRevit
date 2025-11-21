@@ -16,37 +16,9 @@ from System.Drawing import *
 from System.Windows.Forms import *
 
 
-class Logger:
-    def __init__(self, enabled=False):
-        self.messages = []
-        self.enabled = enabled
-
-    def add(self, message):
-        self.messages.append(message)
-        if self.enabled:
-            print(message)
-
-    def show(self):
-        if not self.messages:
-            MessageBox.Show("Нет сообщений логирования.")
-            return
-        form = Form()
-        form.Text = "Логи"
-        form.Size = Size(600, 400)
-        textbox = TextBox()
-        textbox.Multiline = True
-        textbox.ReadOnly = True
-        textbox.ScrollBars = ScrollBars.Vertical
-        textbox.Text = "\n".join(self.messages)
-        textbox.Dock = DockStyle.Fill
-        form.Controls.Add(textbox)
-        form.ShowDialog()
-
-
 class TagSettings(object):
     def __init__(self):
         self.selected_views = []
-        self.selected_categories = []
 
 
 class MainForm(Form):
@@ -57,7 +29,6 @@ class MainForm(Form):
         self.all_views_dict = {}
         self.views_dict = {}
         self.category_mapping = {}
-        self.logger = Logger(enabled=False)
 
         self.InitializeComponent()
         self.Load3DViews()
@@ -70,7 +41,7 @@ class MainForm(Form):
         self.tabControl.Dock = DockStyle.Fill
         self.tabControl.Selecting += self.OnTabSelecting
 
-        tabs = ["1. Выбор видов", "2. Категории", "3. Результаты"]
+        tabs = ["1. Выбор видов", "2. Результаты"]
         for i, text in enumerate(tabs):
             tab = TabPage()
             tab.Text = text
@@ -85,33 +56,18 @@ class MainForm(Form):
             setattr(control, prop, value)
         return control
 
-    def CreateButton(self, text, location=None, size=None, click_handler=None):
-        button = Button()
-        button.Text = text
-        if location:
-            button.Location = location
-        if size:
-            button.Size = size
-        if click_handler:
-            button.Click += click_handler
-        return button
-
     def SetupTab1(self, tab):
         self.txtSearchViews = self.CreateControl(
             TextBox, Location=Point(120, 35), Size=Size(140, 20)
         )
-        self.btnSelectAll = self.CreateButton(
-            text="Выбрать все",
-            location=Point(270, 35),
-            size=Size(100, 25),
-            click_handler=self.OnSelectAllViews,
+        self.btnSelectAll = self.CreateControl(
+            Button, Text="Выбрать все", Location=Point(270, 35), Size=Size(100, 25)
         )
-        self.btnDeselectAll = self.CreateButton(
-            text="Снять выбор",
-            location=Point(380, 35),
-            size=Size(100, 25),
-            click_handler=self.OnDeselectAllViews,
+        self.btnSelectAll.Click += self.OnSelectAllViews
+        self.btnDeselectAll = self.CreateControl(
+            Button, Text="Снять выбор", Location=Point(380, 35), Size=Size(100, 25)
         )
+        self.btnDeselectAll.Click += self.OnDeselectAllViews
         controls = [
             self.CreateControl(
                 Label,
@@ -131,76 +87,21 @@ class MainForm(Form):
                 Size=Size(600, 360),
                 CheckOnClick=True,
             ),
-            self.CreateControl(
-                CheckBox,
-                Text="Включить логирование",
-                Location=Point(10, 440),
-                Size=Size(200, 20),
-            ),
-            self.CreateButton(
-                text="Показать логи",
-                location=Point(220, 440),
-                size=Size(100, 25),
-                click_handler=self.OnShowLogsClick,
-            ),
-            self.CreateButton(
-                text="Далее →",
-                location=Point(600, 440),
-                click_handler=self.OnNext1Click,
-            ),
+            self.CreateControl(Button, Text="Далее →", Location=Point(600, 440)),
         ]
-        (
-            self.lblViews,
-            self.lblSearch,
-            self.txtSearchViews,
-            self.btnSelectAll,
-            self.btnDeselectAll,
-            self.lstViews,
-            self.chkLogging,
-            self.btnShowLogs,
-            self.btnNext1,
-        ) = (
-            controls[0],
-            controls[1],
-            controls[2],
-            controls[3],
-            controls[4],
-            controls[5],
-            controls[6],
-            controls[7],
-            controls[8],
-        )
-        self.chkLogging.CheckedChanged += self.OnLoggingCheckedChanged
-        self.txtSearchViews.TextChanged += self.OnSearchViewsTextChanged
+        self.lblViews = controls[0]
+        self.lblSearch = controls[1]
+        self.txtSearchViews = controls[2]
+        self.btnSelectAll = controls[3]
+        self.btnDeselectAll = controls[4]
+        self.lstViews = controls[5]
+        self.btnNext1 = controls[6]
+        self.btnNext1.Click += self.OnNext1Click
         for c in controls:
             tab.Controls.Add(c)
+        self.txtSearchViews.TextChanged += self.OnSearchViewsTextChanged
 
     def SetupTab2(self, tab):
-        controls = [
-            self.CreateControl(
-                Label,
-                Text="Выберите категории элементов:",
-                Location=Point(10, 10),
-                Size=Size(300, 20),
-            ),
-            self.CreateControl(
-                CheckedListBox,
-                Location=Point(10, 40),
-                Size=Size(600, 400),
-                CheckOnClick=True,
-            ),
-            self.CreateButton(
-                "← Назад", Point(500, 450), click_handler=self.OnBack1Click
-            ),
-            self.CreateButton(
-                "Далее →", Point(600, 450), click_handler=self.OnNext2Click
-            ),
-        ]
-        self.lblCategories, self.lstCategories, self.btnBack1, self.btnNext2 = controls
-        for c in controls:
-            tab.Controls.Add(c)
-
-    def SetupTab3(self, tab):
         self.lstResults = ListBox()
         self.lstResults.Location = Point(10, 40)
         self.lstResults.Size = Size(700, 400)
@@ -214,16 +115,17 @@ class MainForm(Form):
                 Size=Size(300, 20),
             ),
             self.lstResults,
-            self.CreateButton(
-                "← Назад", Point(340, 450), click_handler=self.OnBack2Click
-            ),
-            self.CreateButton(
-                "Выполнить анализ",
-                Point(500, 450),
-                Size(150, 30),
-                click_handler=self.OnExecuteClick,
+            self.CreateControl(Button, Text="← Назад", Location=Point(340, 450)),
+            self.CreateControl(
+                Button,
+                Text="Выполнить анализ",
+                Location=Point(500, 450),
+                Size=Size(150, 30),
             ),
         ]
+        self.btnBack2, self.btnExecute = controls[2], controls[3]
+        self.btnBack2.Click += self.OnBack2Click
+        self.btnExecute.Click += self.OnExecuteClick
         for c in controls:
             tab.Controls.Add(c)
 
@@ -258,12 +160,6 @@ class MainForm(Form):
                 )
                 self.views_dict[name] = view
 
-    def OnLoggingCheckedChanged(self, sender, args):
-        self.logger.enabled = sender.Checked
-
-    def OnShowLogsClick(self, sender, args):
-        self.logger.show()
-
     def OnNext1Click(self, sender, args):
         self.settings.selected_views = []
         for i in range(self.lstViews.Items.Count):
@@ -274,18 +170,19 @@ class MainForm(Form):
             MessageBox.Show("Выберите хотя бы один вид!")
             return
 
-        self.CollectCategories()
         self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 1
         self.tabControl.Selecting += self.OnTabSelecting
 
-    def OnSelectAllViews(self, sender, args):
+    def OnToggleViews(self, checked):
         for i in range(self.lstViews.Items.Count):
-            self.lstViews.SetItemChecked(i, True)
+            self.lstViews.SetItemChecked(i, checked)
+
+    def OnSelectAllViews(self, sender, args):
+        self.OnToggleViews(True)
 
     def OnDeselectAllViews(self, sender, args):
-        for i in range(self.lstViews.Items.Count):
-            self.lstViews.SetItemChecked(i, False)
+        self.OnToggleViews(False)
 
     def OnSearchViewsTextChanged(self, sender, args):
         filter_text = sender.Text
@@ -376,58 +273,13 @@ class MainForm(Form):
         except Exception as e:
             MessageBox.Show("Ошибка при анализе марок: " + str(e))
 
-    def OnBack1Click(self, sender, args):
+    def OnBack2Click(self, sender, args):
         self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 0
         self.tabControl.Selecting += self.OnTabSelecting
 
-    def OnBack2Click(self, sender, args):
-        self.tabControl.Selecting -= self.OnTabSelecting
-        self.tabControl.SelectedIndex = 1
-        self.tabControl.Selecting += self.OnTabSelecting
-
     def OnTabSelecting(self, sender, args):
         args.Cancel = True
-
-    def CollectCategories(self):
-        categories = [
-            BuiltInCategory.OST_DuctCurves,
-            BuiltInCategory.OST_FlexDuctCurves,
-            BuiltInCategory.OST_DuctInsulations,
-            BuiltInCategory.OST_DuctTerminal,
-            BuiltInCategory.OST_DuctAccessory,
-            BuiltInCategory.OST_MechanicalEquipment,
-        ]
-
-        unique_cats = set()
-        for cat in categories:
-            try:
-                cat_obj = Category.GetCategory(self.doc, cat)
-                if cat_obj:
-                    unique_cats.add(cat_obj)
-            except:
-                pass
-
-        self.settings.selected_categories = list(unique_cats)
-        self.lstCategories.Items.Clear()
-        self.category_mapping.clear()
-
-        for cat in sorted(
-            self.settings.selected_categories, key=lambda x: self.GetCategoryName(x)
-        ):
-            name = self.GetCategoryName(cat)
-            self.lstCategories.Items.Add(name, True)
-            self.category_mapping[name] = cat
-
-    def GetCategoryName(self, category):
-        if not category:
-            return "Неизвестная категория"
-        try:
-            if hasattr(category, "Id") and category.Id.IntegerValue < 0:
-                return LabelUtils.GetLabelFor(BuiltInCategory(category.Id.IntegerValue))
-        except Exception as e:
-            self.logger.add("Ошибка получения имени категории: {0}".format(e))
-        return getattr(category, "Name", "Неизвестная категория")
 
 
 def main():
