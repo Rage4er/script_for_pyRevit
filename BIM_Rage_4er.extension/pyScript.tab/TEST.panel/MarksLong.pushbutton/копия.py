@@ -368,29 +368,14 @@ class MainForm(Form):
                     category_name = (
                         tag.Category.Name if tag.Category else "Без категории"
                     )
-                    family_value = category_name
-                    for param in tag.Parameters:
-                        if param.Definition.Name == "Семейство" and param.HasValue:
-                            try:
-                                family_value = param.AsValueString() or str(
-                                    param.AsString()
-                                )
-                            except:
-                                family_value = "Неизвестно"
-                            break
-                    item = ListViewItem(family_value)
-                    type_value = "Нет типа"
-                    for param in tag.Parameters:
-                        if param.Definition.Name == "Тип" and param.HasValue:
-                            try:
-                                type_value = param.AsValueString() or str(
-                                    param.AsString()
-                                )
-                            except:
-                                type_value = "Неизвестно"
-                            break
-                    item.SubItems.Add(type_value)
-                    item.SubItems.Add(category_name)
+                    item = ListViewItem(category_name)
+                    tag_text = (
+                        tag.TagText
+                        if hasattr(tag, "TagText") and tag.TagText
+                        else "Без текста"
+                    )
+                    item.SubItems.Add(tag_text)
+                    item.SubItems.Add("")
                     self.lstTagsOnView.Items.Add(item)
 
         # Подсчет независимых марок на виде для диагностики
