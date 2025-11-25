@@ -334,7 +334,7 @@ class MainForm(Form):
                         and family.FamilyCategory.Id in tag_category_ids
                     ):
                         try:
-                            family_name = family.FamilyCategory.Name
+                            family_name = family.Name
                         except:
                             family_name = self.GetElementName(family)
                         symbol_ids = family.GetFamilySymbolIds()
@@ -560,11 +560,17 @@ class MainForm(Form):
                     except:
                         family_name = "Неизвестно"
 
-                    # Получаем имя типоразмера из SymbolId
+                    # Получаем имя типоразмера из GetTypeId
                     current_family_type = self.reverse_symbol_dict.get(
-                        element.SymbolId, ("", "Нет типа")
+                        element.GetTypeId(), ("", "Нет типа")
                     )
                     type_name = current_family_type[1]
+                    if (
+                        type_name == "Нет типа"
+                        and hasattr(element, "Symbol")
+                        and element.Symbol
+                    ):
+                        type_name = self.GetSymbolTypeName(element.Symbol)
                     category_name = (
                         element.Category.Name if element.Category else "Без категории"
                     )
@@ -639,14 +645,18 @@ class MainForm(Form):
                     category_name = (
                         tag.Category.Name if tag.Category else "Без категории"
                     )
-                    family_value = category_name
+                    tag_type = self.doc.GetElement(tag.GetTypeId())
+                    family_name = tag_type.Family.Name if tag_type else "Неизвестно"
 
-                    # Получаем имя типоразмера из параметра "Тип"
-                    type_value = self.GetElementTypeName(tag)
+                    # Получаем имя типоразмера из reverse_symbol_dict
+                    current_family_type = self.reverse_symbol_dict.get(
+                        tag.GetTypeId(), ("", "Нет типа")
+                    )
+                    type_value = current_family_type[1]
 
                     print(
                         "PopulateTagsOnView: IndependentTag - семейство: {}, тип: {}".format(
-                            family_value, type_value
+                            family_name, type_value
                         )
                     )
 
@@ -655,7 +665,7 @@ class MainForm(Form):
                     row = self.dgTags.Rows[row_index]
                     row.Tag = tag
                     row.Cells["Id"].Value = str(tag.Id.IntegerValue)
-                    self.dgTags.Rows[row_index].Cells["Family"].Value = family_value
+                    self.dgTags.Rows[row_index].Cells["Family"].Value = family_name
                     self.dgTags.Rows[row_index].Cells["Category"].Value = category_name
                     self.dgTags.Rows[row_index].Cells[3].Value = type_value
 
@@ -673,8 +683,8 @@ class MainForm(Form):
                             type_cell.Items.Add(type_value)
 
                         # Добавляем все доступные типы для этого семейства
-                        if family_value in self.available_types:
-                            for available_type in self.available_types[family_value]:
+                        if family_name in self.available_types:
+                            for available_type in self.available_types[family_name]:
                                 if available_type != type_value:
                                     type_cell.Items.Add(available_type)
 
@@ -757,56 +767,30 @@ class MainForm(Form):
                 args.RowIndex, args.ColumnIndex
             )
         )
-        if args.ColumnIndex == 1 and args.RowIndex >= 0:
+        if args.ColumnIndex == 3 and args.RowIndex >= 0:  # Колонка "Type"
             row = self.dgTags.Rows[args.RowIndex]
             tag_obj = row.Tag
             selected_type = row.Cells["Type"].Value
             family_name = row.Cells["Family"].Value
 
-            print(
-                "OnCellValueChanged: Выбран тип: {}, объект: {}".format(
-                    selected_type, type(tag_obj)
-                )
-            )
-
-            if selected_type and tag_obj and selected_type != "":
-                trans = Transaction(self.doc, "Изменение типоразмера марки")
-                print("OnCellValueChanged: Транзакция начата")
-                try:
+            if selected_type and tag_obj:
+                new_symbol_id = self.symbol_dict.get((family_name, selected_type))
+                if new_symbol_id:
+                    new_symbol = self.doc.GetElement(new_symbol_id)
+                    trans = Transaction(self.doc, "Изменение типоразмера марки")
                     trans.Start()
-
-                    # Для ВСЕХ элементов меняем параметр "Тип"
-                    type_param = tag_obj.LookupParameter("Тип")
-                    if not type_param:
-                        # Пробуем английское имя
-                        type_param = tag_obj.LookupParameter("Type")
-
-                    if type_param and not type_param.IsReadOnly:
-                        print(
-                            "OnCellValueChanged: Установка параметра в '{}'".format(
-                                selected_type
-                            )
-                        )
-                        type_param.Set(selected_type)
+                    try:
+                        tag_obj.ChangeTypeId(new_symbol.Id)
                         trans.Commit()
-                        print("OnCellValueChanged: Транзакция завершена успешно")
-                        try:
-                            doc.Regenerate()
-                            uidoc.RefreshActiveView()
-                        except:
-                            print("OnCellValueChanged: Ошибка обновления вида")
+                        self.doc.Regenerate()
+                        self.uidoc.RefreshActiveView()
+                        row.Cells[3].Value = selected_type  # Обновить отображение
                         MessageBox.Show("Типоразмер изменен")
-                        # Обновляем отображаемое значение в колонке "Текущий типоразмер"
-                        row.Cells[3].Value = selected_type
-                    else:
+                    except Exception as e:
                         trans.RollBack()
-                        print("OnCellValueChanged: Параметр не найден или readonly")
-                        MessageBox.Show("Не удалось найти параметр 'Тип' для изменения")
-
-                except Exception as e:
-                    print("OnCellValueChanged: Ошибка: " + str(e))
-                    trans.RollBack()
-                    MessageBox.Show("Ошибка при изменении типоразмера: " + str(e))
+                        MessageBox.Show("Ошибка: " + str(e))
+                else:
+                    MessageBox.Show("Выбранный тип не найден")
 
     def CollectCategories(self):
         categories = [
@@ -981,6 +965,8 @@ class MainForm(Form):
         if not self.allow_tab_change:
             args.Cancel = True
         else:
+            if args.TabPageIndex == 3:  # Вкладка 4 (0-based)
+                self.PopulateTagsOnView()
             self.allow_tab_change = False
 
 
