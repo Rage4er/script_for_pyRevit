@@ -11,7 +11,9 @@ clr.AddReference("RevitAPIUI")
 clr.AddReference("System.Windows.Forms")
 clr.AddReference("System.Drawing")
 
+import json
 import math
+import os
 
 from Autodesk.Revit.DB import *
 from System import Array
@@ -37,6 +39,8 @@ class MainForm(Form):
         self.all_views_dict = {}
         self.views_dict = {}
         self.category_mapping = {}
+
+        self.LoadTagDefaults()
 
         self.InitializeComponent()
         self.Load3DViews()
@@ -301,57 +305,54 @@ class MainForm(Form):
                 if not elements:
                     continue
 
-                # Взять первый элемент для получения параметров
-                sample_element = elements[0]
+                # Собрать параметры из первых 5 элементов
                 params_set = set()
+                num_elements = min(len(elements), 5)
+                for i in range(num_elements):
+                    el = elements[i]
+                    # Параметры instance
+                    for param in el.Parameters:
+                        if (
+                            param
+                            and param.Definition
+                            and param.Definition.Name
+                            and param.Definition.Name not in ["Имя типа", "Тип"]
+                        ):
+                            params_set.add(param.Definition.Name)
 
-                for param in sample_element.Parameters:
-                    if (
-                        param
-                        and param.Definition
-                        and param.Definition.Name
-                        and param.Definition.Name not in ["Имя типа", "Тип"]
-                    ):
-                        params_set.add(param.Definition.Name)
+                    # Параметры type
+                    type_elem = self.doc.GetElement(el.GetTypeId())
+                    if type_elem:
+                        for param in type_elem.Parameters:
+                            if (
+                                param
+                                and param.Definition
+                                and param.Definition.Name
+                                and param.Definition.Name not in ["Имя типа", "Тип"]
+                            ):
+                                params_set.add(param.Definition.Name)
 
                 sorted_params = sorted(list(params_set))
                 self.settings.parameters_by_category[category.Id.IntegerValue] = (
                     sorted_params
                 )
-                self.settings.selected_parameters[category.Id.IntegerValue] = (
-                    sorted_params[0] if sorted_params else None
-                )
+                # Использовать сохранённый по умолчанию или первый
+                default_param = self.tag_defaults.get(
+                    self.GetCategoryName(category), {}
+                ).get("param")
+                if default_param and default_param in sorted_params:
+                    self.settings.selected_parameters[category.Id.IntegerValue] = (
+                        default_param
+                    )
+                else:
+                    self.settings.selected_parameters[category.Id.IntegerValue] = (
+                        sorted_params[0] if sorted_params else None
+                    )
 
             except Exception as e:
                 print(
                     "Ошибка сбора параметров для {0}: {1}".format(category.Name, str(e))
                 )
-        self.settings.parameters_by_category = {}
-        try:
-            for category in self.settings.selected_categories:
-                collector = FilteredElementCollector(self.doc).OfCategory(
-                    BuiltInCategory(category.Id.IntegerValue)
-                )
-                elements = list(collector)
-                params = set()
-                for el in elements:
-                    if el.Parameters:
-                        for param in el.Parameters:
-                            if param and param.Definition and param.Definition.Name:
-                                if param.Definition.Name not in [
-                                    "Имя типа",
-                                    "Тип",
-                                ]:  # keep "Марка" and others
-                                    params.add(param.Definition.Name)
-                sorted_params = sorted(list(params))
-                self.settings.parameters_by_category[category.Id.IntegerValue] = (
-                    sorted_params
-                )
-                self.settings.selected_parameters[category.Id.IntegerValue] = (
-                    sorted_params[0] if sorted_params else None
-                )
-        except Exception as e:
-            print("Ошибка сбора параметров: " + str(e))
 
     def PopulateParameterSelection(self):
         self.lstParameterSelection.Items.Clear()
@@ -392,6 +393,12 @@ class MainForm(Form):
                     form.SelectedParameter, self.GetCategoryName(category_obj), cat_id
                 )
             )
+            # Сохранить выбор в defaults
+            cat_name = self.GetCategoryName(category_obj)
+            if cat_name not in self.tag_defaults:
+                self.tag_defaults[cat_name] = {}
+            self.tag_defaults[cat_name]["param"] = form.SelectedParameter
+            self.SaveTagDefaults()
 
     def OnBack2Click(self, sender, args):
         self.tabControl.Selecting -= self.OnTabSelecting
@@ -497,7 +504,13 @@ class MainForm(Form):
                             if param_name:
                                 tags_with_param += 1
                                 print("  Выбранный параметр: '{}'".format(param_name))
+                                # Проверка instance или type параметра
                                 param = element.LookupParameter(param_name)
+                                if not param:
+                                    # Проверить type parameter
+                                    type_elem = self.doc.GetElement(element.GetTypeId())
+                                    if type_elem:
+                                        param = type_elem.LookupParameter(param_name)
                                 if param:
                                     print(
                                         "  Параметр найден, HasValue: {}".format(
@@ -553,41 +566,11 @@ class MainForm(Form):
                                             required_length
                                             not in created_symbols[family_id]
                                         ):
-                                            new_name = "Base_{}mm".format(
-                                                required_length
+                                            new_name, shelf_num = (
+                                                self.generate_new_name_and_num(
+                                                    base_symbol, required_length
+                                                )
                                             )
-                                            try:
-                                                existing_names = [
-                                                    sym.Name
-                                                    for sym in FilteredElementCollector(
-                                                        self.doc
-                                                    )
-                                                    .OfClass(FamilySymbol)
-                                                    .WhereElementIsElementType()
-                                                    .ToElements()
-                                                    if sym.Family
-                                                    and sym.Family.Id
-                                                    == base_symbol.Family.Id
-                                                    and sym.Name != base_symbol.Name
-                                                ]
-                                            except Exception as ee:
-                                                print(
-                                                    "Error getting existing_names for tag {}: {}".format(
-                                                        tag.Id, str(ee)
-                                                    )
-                                                )
-                                                existing_names = []
-                                            counter = 1
-                                            base_new_name = new_name
-                                            while any(
-                                                s
-                                                for s in existing_names
-                                                if s == new_name
-                                            ):
-                                                new_name = "{}_{}".format(
-                                                    base_new_name, counter
-                                                )
-                                                counter += 1
 
                                             new_symbol = base_symbol.Duplicate(new_name)
                                             # Установить "Длина полки"
@@ -638,14 +621,14 @@ class MainForm(Form):
                                             tag.ChangeTypeId(new_symbol.Id)
                                             changed_tags += 1
                                             print(
-                                                "Изменен тип марки ID {} на Base_{}mm".format(
-                                                    tag.Id, required_length
+                                                "Изменен тип марки ID {} на {}".format(
+                                                    tag.Id, new_name
                                                 )
                                             )
 
                                         results.append(
-                                            "Марка ID {}: присвоен тип 'Base_{}mm' с длиной полки {}мм".format(
-                                                tag.Id, required_length, required_length
+                                            "Марка ID {}: присвоен тип '{}' с длиной полки {}мм".format(
+                                                tag.Id, new_name, required_length
                                             )
                                         )
                                     else:
@@ -707,6 +690,65 @@ class MainForm(Form):
         except:
             pass
         return getattr(category, "Name", "Неизвестная категория")
+
+    def generate_new_name_and_num(self, tag_type, required_length):
+        name_param = tag_type.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+        if name_param and name_param.HasValue:
+            symbol_name = name_param.AsString()
+        else:
+            symbol_name = tag_type.Name
+
+        parts = symbol_name.split("_")
+        if len(parts) > 1:
+            try:
+                base_num = int(parts[-1])
+                prefix = "_".join(parts[:-1])
+            except ValueError:
+                prefix = symbol_name
+        else:
+            prefix = symbol_name
+
+        num = int(required_length)
+        family = tag_type.Family
+        existing_names = set()
+        symbol_ids = family.GetFamilySymbolIds()
+        for symbol_id in symbol_ids:
+            symbol = self.doc.GetElement(symbol_id)
+            if symbol:
+                name_param = symbol.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+                if name_param and name_param.HasValue:
+                    name = name_param.AsString()
+                else:
+                    name = symbol.Name
+                existing_names.add(name)
+
+        while True:
+            new_name = "{}_{}".format(prefix, num)
+            if new_name not in existing_names:
+                break
+            num += 1  # Инкремент в случае конфликта
+
+        return new_name, num
+
+    def LoadTagDefaults(self):
+        self.tag_defaults = {}
+        script_dir = os.path.dirname(__file__)
+        defaults_path = os.path.join(script_dir, "tag_defaults.json")
+        if os.path.exists(defaults_path):
+            try:
+                with open(defaults_path, "r") as f:
+                    self.tag_defaults = json.load(f)
+            except Exception as e:
+                print("Ошибка загрузки настроек: {}".format(str(e)))
+
+    def SaveTagDefaults(self):
+        script_dir = os.path.dirname(__file__)
+        defaults_path = os.path.join(script_dir, "tag_defaults.json")
+        try:
+            with open(defaults_path, "w") as f:
+                json.dump(self.tag_defaults, f, indent=4)
+        except Exception as e:
+            print("Ошибка сохранения настроек: {}".format(str(e)))
 
 
 class ParameterSelectionForm(Form):
