@@ -2,7 +2,7 @@
 __title__ = "Длина полки марок"
 __author__ = "Rage"
 __doc__ = "Получение длины полки из выбранных марок"
-__ver__ = "1"
+__ver__ = "1.0"
 
 import clr
 
@@ -14,6 +14,7 @@ clr.AddReference("System.Drawing")
 import datetime
 
 from Autodesk.Revit.DB import *
+from pyrevit import revit
 from System.Drawing import *
 from System.Windows.Forms import *
 
@@ -34,6 +35,12 @@ class MainForm(Form):
         self.category_mapping = {}
         self.allow_tab_change = False
         self.available_types = {}  # family_name -> list of type_names
+        self.symbol_dict = {}  # (family_name, type_name) -> symbol
+        self.reverse_symbol_dict = {}  # symbol.Id -> (family_name, type_name)
+        self.tag_objects = []  # list of tag objects for DataGridView rows
+        self.ignore_events = (
+            False  # flag to ignore OnCellValueChanged during population
+        )
 
         self.InitializeComponent()
         self.CollectCategories()
@@ -198,8 +205,22 @@ class MainForm(Form):
         colCategory.HeaderText = "Категория"
         colCategory.ReadOnly = True
         colCategory.Name = "Category"
-        colCategory.Width = 150
+        colCategory.Width = 180
         self.dgTags.Columns.Add(colCategory)
+
+        colCurrentType = DataGridViewTextBoxColumn()
+        colCurrentType.HeaderText = "Текущий типоразмер"
+        colCurrentType.ReadOnly = True
+        colCurrentType.Name = "CurrentType"
+        colCurrentType.Width = 120
+        self.dgTags.Columns.Add(colCurrentType)
+
+        colId = DataGridViewTextBoxColumn()
+        colId.HeaderText = "ID марки"
+        colId.ReadOnly = True
+        colId.Name = "Id"
+        colId.Width = 70
+        self.dgTags.Columns.Add(colId)
 
         # Обработчики событий
         self.dgTags.EditingControlShowing += self.OnEditingControlShowing
@@ -238,7 +259,7 @@ class MainForm(Form):
             tab.Controls.Add(c)
 
     def OnDataError(self, sender, args):
-        # Игнорируем ошибки данных в комбобоксах
+        # Игнорируем ошибки DataGridView
         args.ThrowException = False
 
     def OnNext1Click(self, sender, args):
@@ -277,154 +298,48 @@ class MainForm(Form):
         self.tabControl.SelectedIndex = 1
 
     def OnViewTagsClick(self, sender, args):
-        print("OnViewTagsClick: Переход на вкладку 4")
         self.allow_tab_change = True
         self.tabControl.SelectedIndex = 3
-        # Автоматически собираем типоразмеры, если еще не собраны
-        if not self.available_types:
-            print(
-                "OnViewTagsClick: Сбор типоразмеров не выполнен, запускаем CollectAllTagTypes"
-            )
-            self.CollectAllTagTypes()
-        else:
-            print("OnViewTagsClick: Типоразмеры уже собраны, пропускаем")
-        # Автоматически загружаем марки на виде
-        print("OnViewTagsClick: Загрузка марок на виде")
-        self.PopulateTagsOnView()
 
     def OnRefreshClick(self, sender, args):
-        print("OnRefreshClick: Принудительная перезагрузка типоразмеров и марок")
-        # Принудительно перезагружаем типоразмеры
+        # Собираем ВСЕ доступные типоразмеры маркеров в проекте
         self.CollectAllTagTypes()
         self.PopulateTagsOnView()
-
-    def CollectAllTagTypes(self):
-        """Собираем ВСЕ доступные типоразмеры маркеров в проекте"""
-        print("CollectAllTagTypes: Начало сбора типоразмеров")
-        self.available_types = {}
-
-        self.lblStatusTab4.Text = "Сбор всех типоразмеров маркеров..."
-
-        try:
-            # Получаем ВСЕ семейства в проекте
-            collector = FilteredElementCollector(self.doc).OfClass(Family)
-            all_families = list(collector)
-            print("CollectAllTagTypes: Найдено семейств: {}".format(len(all_families)))
-
-            # Категории маркеров
-            tag_category_ids = [
-                ElementId(BuiltInCategory.OST_DuctTags),
-                ElementId(BuiltInCategory.OST_FlexDuctTags),
-                ElementId(BuiltInCategory.OST_DuctInsulationsTags),
-                ElementId(BuiltInCategory.OST_DuctTerminalTags),
-                ElementId(BuiltInCategory.OST_DuctAccessoryTags),
-                ElementId(BuiltInCategory.OST_MechanicalEquipmentTags),
-            ]
-            print(
-                "CollectAllTagTypes: Категории маркеров: {}".format(
-                    len(tag_category_ids)
-                )
-            )
-
-            for family in all_families:
-                try:
-                    # Проверяем, является ли семейство маркером
-                    if (
-                        family.FamilyCategory
-                        and family.FamilyCategory.Id in tag_category_ids
-                    ):
-                        family_name = family.Name
-                        symbol_ids = family.GetFamilySymbolIds()
-                        print(
-                            "CollectAllTagTypes: Обработка семейства '{}' с {} символами".format(
-                                family_name, len(symbol_ids)
-                            )
-                        )
-
-                        if family_name not in self.available_types:
-                            self.available_types[family_name] = []
-
-                        # Собираем все типоразмеры этого семейства
-                        for symbol_id in symbol_ids:
-                            symbol = self.doc.GetElement(symbol_id)
-                            if symbol and symbol.IsActive:
-                                type_name = self.GetSymbolTypeName(symbol)
-                                print(
-                                    "CollectAllTagTypes: Символ '{}' имеет тип '{}'".format(
-                                        symbol.Name, type_name
-                                    )
-                                )
-                                if (
-                                    type_name
-                                    and type_name
-                                    not in self.available_types[family_name]
-                                ):
-                                    self.available_types[family_name].append(type_name)
-
-                except Exception as e:
-                    print(
-                        "CollectAllTagTypes: Ошибка при обработке семейства: {}".format(
-                            str(e)
-                        )
-                    )
-                    continue
-
-            # Диагностика
-            total_types = sum(len(types) for types in self.available_types.values())
-            print(
-                "CollectAllTagTypes: Собрано семейств: {}, типоразмеров: {}".format(
-                    len(self.available_types), total_types
-                )
-            )
-            self.lblStatusTab4.Text = (
-                "Загружено {} семейств маркеров, {} типоразмеров".format(
-                    len(self.available_types), total_types
-                )
-            )
-
-            # Выводим отладочную информацию только при первом сборе
-            if self.available_types and not hasattr(self, "_debug_shown"):
-                debug_info = "Доступные семейства маркеров:\n"
-                for family_name, types in self.available_types.items():
-                    debug_info += "{}: {} типов\n".format(family_name, len(types))
-                MessageBox.Show(debug_info, "Отладка - доступные типоразмеры")
-                self._debug_shown = True
-
-        except Exception as e:
-            print("CollectAllTagTypes: Критическая ошибка: {}".format(str(e)))
-            MessageBox.Show("Ошибка при сборе типоразмеров: " + str(e), "Ошибка")
 
     def GetSymbolTypeName(self, symbol):
         """Получаем имя типоразмера символа"""
         if not symbol:
             return "Без имени"
 
-        # Сначала пробуем получить имя из параметра "Type Name"
-        type_name_param = symbol.LookupParameter("Type Name")
-        if type_name_param and type_name_param.HasValue:
-            name = type_name_param.AsString()
-            if name and name.strip():
-                return name.strip()
-
-        # Пробуем параметр "Тип"
-        type_param = symbol.LookupParameter("Тип")
-        if type_param and type_param.HasValue:
-            name = type_param.AsString()
-            if name and name.strip():
-                return name.strip()
+        # Сначала пробуем получить свойство Name
+        try:
+            if hasattr(symbol, "Name") and symbol.Name:
+                name = symbol.Name
+                if name and name.strip():
+                    return name.strip()
+        except:
+            pass
 
         # Пробуем параметр имени символа
-        name_param = symbol.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
-        if name_param and name_param.HasValue:
-            name = name_param.AsString()
-            if name and name.strip():
-                return name.strip()
+        try:
+            name_param = symbol.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+            if name_param and name_param.HasValue:
+                name = name_param.AsString()
+                if name and name.strip():
+                    return name.strip()
+        except:
+            pass
 
-        # Используем свойство Name
-        if hasattr(symbol, "Name") and symbol.Name:
-            name = symbol.Name
-            if name and name.strip():
-                return name.strip()
+        # Пробуем другие параметры
+        for param_name in ["Тип", "Type Name", "Type"]:
+            try:
+                param = symbol.LookupParameter(param_name)
+                if param and param.HasValue:
+                    name = param.AsValueString() or param.AsString()
+                    if name and name.strip():
+                        return name.strip()
+            except:
+                continue
 
         return "Типоразмер_" + str(symbol.Id.IntegerValue)
 
@@ -512,17 +427,64 @@ class MainForm(Form):
 
         return new_name, num
 
+    def CollectAllTagTypes(self):
+        """Собирает все доступные типоразмеры марок в проекте"""
+        self.available_types.clear()
+        self.symbol_dict.clear()
+        self.reverse_symbol_dict.clear()
+
+        # Категории марок
+        tag_categories = [
+            BuiltInCategory.OST_DuctTags,
+            BuiltInCategory.OST_FlexDuctTags,
+            BuiltInCategory.OST_DuctInsulationsTags,
+            BuiltInCategory.OST_DuctTerminalTags,
+            BuiltInCategory.OST_DuctAccessoryTags,
+            BuiltInCategory.OST_MechanicalEquipmentTags,
+        ]
+
+        for builtin_cat in tag_categories:
+            try:
+                category = Category.GetCategory(self.doc, builtin_cat)
+                if category:
+                    collector = (
+                        FilteredElementCollector(self.doc)
+                        .OfCategoryId(category.Id)
+                        .OfClass(FamilySymbol)
+                    )
+                    for symbol in collector:
+                        if symbol and symbol.IsActive:
+                            family_name = (
+                                symbol.Family.Name if symbol.Family else "Неизвестно"
+                            )
+                            type_name = self.GetSymbolTypeName(symbol)
+
+                            if family_name not in self.available_types:
+                                self.available_types[family_name] = []
+
+                            if type_name not in self.available_types[family_name]:
+                                self.available_types[family_name].append(type_name)
+                                self.symbol_dict[(family_name, type_name)] = symbol
+                                self.reverse_symbol_dict[symbol.Id] = (
+                                    family_name,
+                                    type_name,
+                                )
+            except Exception as e:
+                print(
+                    "Ошибка при сборе типов для категории {}: {}".format(builtin_cat, e)
+                )
+
     def PopulateTagsOnView(self):
-        print("PopulateTagsOnView: Начало загрузки марок на виде")
-        # Очищаем DataGridView
+        # Очищаем DataGridView и список объектов
         self.dgTags.Rows.Clear()
-        print("PopulateTagsOnView: DataGridView очищен")
+        del self.tag_objects[:]
+        self.ignore_events = True  # ignore events during population
 
         view = self.uidoc.ActiveView
         if not view:
-            print("PopulateTagsOnView: Активный вид не найден")
             MessageBox.Show("Нет активного вида!")
             return
+
         print("PopulateTagsOnView: Активный вид: {}".format(view.Name))
 
         # Категории марок
@@ -534,12 +496,14 @@ class MainForm(Form):
             BuiltInCategory.OST_DuctAccessoryTags,
             BuiltInCategory.OST_MechanicalEquipmentTags,
         ]
+
         print(
             "PopulateTagsOnView: Категории для поиска: {}".format(len(tag_categories))
         )
 
         element_count = 0
         tag_count = 0
+        temp_tag_objects = []
 
         # Собираем марки типа FamilyInstance
         collector = FilteredElementCollector(self.doc, view.Id).OfClass(FamilyInstance)
@@ -547,68 +511,7 @@ class MainForm(Form):
             if element.Category and element.Category.Id.IntegerValue < 0:
                 builtin_cat = BuiltInCategory(element.Category.Id.IntegerValue)
                 if builtin_cat in tag_categories:
-                    # Получаем имя семейства
-                    if element.Symbol and element.Symbol.Family:
-                        family_name = element.Symbol.Family.Name
-                    else:
-                        family_name = "Неизвестно"
-
-                    # Получаем имя типоразмера из параметра "Тип"
-                    type_name = self.GetElementTypeName(element)
-                    print(
-                        "PopulateTagsOnView: FamilyInstance - семейство: {}, тип: {}".format(
-                            family_name, type_name
-                        )
-                    )
-                    category_name = (
-                        element.Category.Name if element.Category else "Без категории"
-                    )
-
-                    # Добавляем строку в DataGridView
-                    row_index = self.dgTags.Rows.Add()
-                    self.dgTags.Rows[row_index].Cells["Family"].Value = family_name
-                    self.dgTags.Rows[row_index].Cells["Category"].Value = category_name
-
-                    # Для комбобокса устанавливаем значение и заполняем варианты
-                    type_cell = self.dgTags.Rows[row_index].Cells["Type"]
-                    if isinstance(type_cell, DataGridViewComboBoxCell):
-                        # Устанавливаем текущее значение
-                        type_cell.Value = type_name
-                        print(
-                            "PopulateTagsOnView: Установлено значение комбо: {}".format(
-                                type_name
-                            )
-                        )
-
-                        # Заполняем варианты для этого семейства
-                        type_cell.Items.Clear()
-
-                        # ВСЕГДА добавляем текущее значение
-                        if type_name and type_name not in type_cell.Items:
-                            type_cell.Items.Add(type_name)
-
-                        # Добавляем все доступные типы для этого семейства
-                        if family_name in self.available_types:
-                            print(
-                                "PopulateTagsOnView: Добавление {} типов для семейства {}".format(
-                                    len(self.available_types[family_name]), family_name
-                                )
-                            )
-                            for available_type in self.available_types[family_name]:
-                                if available_type != type_name:
-                                    type_cell.Items.Add(available_type)
-                        else:
-                            # Если семейства нет в available_types, добавляем только текущее значение
-                            if type_name and type_name not in type_cell.Items:
-                                type_cell.Items.Add(type_name)
-                            print(
-                                "PopulateTagsOnView: Семейство {} не найдено в available_types".format(
-                                    family_name
-                                )
-                            )
-
-                    # Сохраняем элемент для последующего использования
-                    self.dgTags.Rows[row_index].Tag = element
+                    temp_tag_objects.append(element)
                     element_count += 1
 
         print(
@@ -623,54 +526,76 @@ class MainForm(Form):
             if tag.Category and tag.Category.Id.IntegerValue < 0:
                 builtin_cat = BuiltInCategory(tag.Category.Id.IntegerValue)
                 if builtin_cat in tag_categories:
-                    category_name = (
-                        tag.Category.Name if tag.Category else "Без категории"
-                    )
-
-                    # Для независимых марок используем категорию как имя семейства
-                    family_name = category_name
-
-                    # Получаем имя типоразмера из параметра "Тип"
-                    type_value = self.GetElementTypeName(tag)
-                    print(
-                        "PopulateTagsOnView: IndependentTag - категория: {}, тип: {}".format(
-                            family_name, type_value
-                        )
-                    )
-
-                    # Добавляем строку в DataGridView
-                    row_index = self.dgTags.Rows.Add()
-                    self.dgTags.Rows[row_index].Cells["Family"].Value = family_name
-                    self.dgTags.Rows[row_index].Cells["Category"].Value = category_name
-
-                    # Для комбобокса устанавливаем значение и заполняем варианты
-                    type_cell = self.dgTags.Rows[row_index].Cells["Type"]
-                    if isinstance(type_cell, DataGridViewComboBoxCell):
-                        # Устанавливаем текущее значение
-                        type_cell.Value = type_value
-
-                        # Заполняем варианты для этого семейства
-                        type_cell.Items.Clear()
-
-                        # ВСЕГДА добавляем текущее значение
-                        if type_value and type_value not in type_cell.Items:
-                            type_cell.Items.Add(type_value)
-
-                        # Добавляем все доступные типы для этого семейства
-                        if family_name in self.available_types:
-                            for available_type in self.available_types[family_name]:
-                                if available_type != type_value:
-                                    type_cell.Items.Add(available_type)
-                        else:
-                            # Если семейства нет в available_types, добавляем только текущее значение
-                            if type_value and type_value not in type_cell.Items:
-                                type_cell.Items.Add(type_value)
-
-                    # Сохраняем элемент для последующего использования
-                    self.dgTags.Rows[row_index].Tag = tag
+                    temp_tag_objects.append(tag)
                     tag_count += 1
 
         print("PopulateTagsOnView: Найдено {} IndependentTag марок".format(tag_count))
+
+        # Теперь заполняем таблицу
+        for obj in temp_tag_objects:
+            if isinstance(obj, FamilyInstance):
+                element = obj
+                # Получаем имя семейства
+                try:
+                    family_name = element.Symbol.Family.Name
+                except:
+                    family_name = "Неизвестно"
+
+                # Получаем имя типоразмера
+                current_family_type = self.reverse_symbol_dict.get(
+                    element.GetTypeId(), ("", "Нет типа")
+                )
+                type_name = current_family_type[1]
+                if (
+                    type_name == "Нет типа"
+                    and hasattr(element, "Symbol")
+                    and element.Symbol
+                ):
+                    type_name = self.GetSymbolTypeName(element.Symbol)
+                category_name = (
+                    element.Category.Name if element.Category else "Без категории"
+                )
+
+            else:
+                tag = obj
+                tag_type = self.doc.GetElement(tag.GetTypeId())
+                family_name = tag_type.Family.Name if tag_type else "Неизвестно"
+                type_name = self.GetSymbolTypeName(tag_type)
+                category_name = tag.Category.Name if tag.Category else "Без категории"
+
+            # Добавляем строку в DataGridView
+            row_index = self.dgTags.Rows.Add()
+            row = self.dgTags.Rows[row_index]
+            row.Tag = obj
+            row.Cells["Id"].Value = str(obj.Id.IntegerValue)
+            row.Cells["Family"].Value = family_name
+            row.Cells["Category"].Value = category_name
+            row.Cells["CurrentType"].Value = type_name
+
+            # Для комбобокса устанавливаем значение и заполняем варианты
+            type_cell = row.Cells["Type"]
+            if isinstance(type_cell, DataGridViewComboBoxCell):
+                # Устанавливаем текущее значение
+                type_cell.Value = type_name
+
+                # Заполняем варианты для этого семейства
+                type_cell.Items.Clear()
+
+                # ВСЕГДА добавляем текущее значение
+                if type_name and type_name not in type_cell.Items:
+                    type_cell.Items.Add(type_name)
+
+                # Добавляем все доступные типы для этого семейства
+                if family_name in self.available_types:
+                    for available_type in self.available_types[family_name]:
+                        if (
+                            available_type != type_name
+                            and available_type not in type_cell.Items
+                        ):
+                            type_cell.Items.Add(available_type)
+
+            # Сохраняем элемент для последующего использования
+            self.tag_objects.append(obj)
 
         self.lblStatusTab4.Text = "Найдено маркеров: {} ({} элементов, {} тегов). Доступно {} семейств для замены".format(
             element_count + tag_count,
@@ -678,7 +603,9 @@ class MainForm(Form):
             tag_count,
             len(self.available_types),
         )
+
         print("PopulateTagsOnView: Итого марок: {}".format(element_count + tag_count))
+        self.ignore_events = False  # allow events after population
 
     def GetElementTypeName(self, element):
         """Получаем имя типоразмера из параметра 'Тип' элемента"""
@@ -712,7 +639,7 @@ class MainForm(Form):
         if (
             isinstance(args.Control, ComboBox)
             and self.dgTags.CurrentCell.ColumnIndex == 1
-        ):
+        ):  # Колонка "Type"
             combo = args.Control
             combo.DropDownStyle = ComboBoxStyle.DropDownList
             row_index = self.dgTags.CurrentCell.RowIndex
@@ -736,69 +663,66 @@ class MainForm(Form):
                             combo.Items.Add(type_name)
 
     def OnCellValueChanged(self, sender, args):
+        if self.ignore_events:
+            return
         print(
             "OnCellValueChanged: Изменение в строке {}, колонке {}".format(
                 args.RowIndex, args.ColumnIndex
             )
         )
-        if args.ColumnIndex == 1 and args.RowIndex >= 0:
+
+        if args.ColumnIndex == 1 and args.RowIndex >= 0:  # Колонка "Type"
             row = self.dgTags.Rows[args.RowIndex]
             tag_obj = row.Tag
             selected_type = row.Cells["Type"].Value
+            family_name = row.Cells["Family"].Value
+            current_type = row.Cells["CurrentType"].Value
+
             print(
-                "OnCellValueChanged: Выбран тип: {}, объект: {}".format(
-                    selected_type, type(tag_obj)
+                "OnCellValueChanged: Текущий тип '{}', Выбран '{}', Объект {} ({})".format(
+                    current_type, selected_type, type(tag_obj), tag_obj.Id.IntegerValue
                 )
             )
 
-            if selected_type and tag_obj and selected_type != "":
-                trans = Transaction(self.doc, "Изменение типоразмера марки")
-                print("OnCellValueChanged: Транзакция начата")
-                try:
-                    trans.Start()
+            if selected_type and tag_obj and selected_type != current_type:
+                print("OnCellValueChanged: Изменение типа необходимо")
+                # Ищем символ по имени типа
+                new_symbol = self.symbol_dict.get((family_name, selected_type))
 
-                    # Для ВСЕХ элементов меняем параметр "Тип"
-                    type_param = tag_obj.LookupParameter("Тип")
-                    if not type_param:
-                        # Пробуем английское имя
-                        type_param = tag_obj.LookupParameter("Type")
-                        print(
-                            "OnCellValueChanged: Используем параметр 'Type' вместо 'Тип'"
+                if new_symbol:
+                    print(
+                        "OnCellValueChanged: Найден символ {}".format(
+                            new_symbol.Id.IntegerValue
                         )
-
-                    if type_param and not type_param.IsReadOnly:
+                    )
+                    try:
+                        with revit.Transaction("Изменение типоразмера марки"):
+                            tag_obj.ChangeTypeId(new_symbol.Id)
+                        self.doc.Regenerate()
+                        self.uidoc.RefreshActiveView()
+                        # Обновляем отображение текущего типа
+                        row.Cells["CurrentType"].Value = selected_type
+                        MessageBox.Show("Типоразмер изменен")
+                        print("OnCellValueChanged: Типоразмер успешно изменен")
+                    except Exception as e:
                         print(
-                            "OnCellValueChanged: Установка параметра в '{}'".format(
-                                selected_type
+                            "OnCellValueChanged: Ошибка при изменении: {}".format(
+                                str(e)
                             )
                         )
-                        type_param.Set(selected_type)
-                        trans.Commit()
-                        print("OnCellValueChanged: Транзакция завершена успешно")
-                        try:
-                            self.doc.Regenerate()
-                            self.uidoc.RefreshActiveView()
-                            print("OnCellValueChanged: Вид обновлен")
-                        except:
-                            print("OnCellValueChanged: Ошибка обновления вида")
-                        MessageBox.Show("Типоразмер изменен")
-                        # Обновляем отображаемое значение в колонке "Текущий тип"
-                        row.Cells[2].Value = selected_type
-                        print(
-                            "OnCellValueChanged: Строка обновлена, повторная загрузка"
+                        if "forbidden" not in str(e).lower():
+                            MessageBox.Show("Ошибка: " + str(e))
+                else:
+                    print(
+                        "OnCellValueChanged: Символ для типа '{}' не найден".format(
+                            selected_type
                         )
-                        self.PopulateTagsOnView()
-                    else:
-                        trans.RollBack()
-                        print("OnCellValueChanged: Параметр не найден или readonly")
-                        MessageBox.Show("Не удалось найти параметр 'Тип' для изменения")
-
-                except Exception as e:
-                    if trans.GetStatus() == TransactionStatus.Started:
-                        trans.RollBack()
-                    print("OnCellValueChanged: Ошибка: {}".format(str(e)))
-                    MessageBox.Show("Ошибка: " + str(e))
-                    MessageBox.Show("Ошибка при изменении типоразмера: " + str(e))
+                    )
+                    MessageBox.Show("Выбранный тип не найден")
+            elif selected_type == current_type:
+                print("OnCellValueChanged: Изменение не требуется (тип совпадает)")
+            else:
+                print("OnCellValueChanged: Выбран пустой тип")
 
     def CollectCategories(self):
         categories = [
@@ -840,6 +764,13 @@ class MainForm(Form):
             pass
         return getattr(category, "Name", "Неизвестная категория")
 
+    def GetElementName(self, element):
+        """Получаем имя элемента"""
+        try:
+            return element.Name
+        except:
+            return "Неизвестно"
+
     def PopulateTagFamilies(self):
         self.lstTagFamilies.Items.Clear()
 
@@ -858,6 +789,20 @@ class MainForm(Form):
                         item.Tag = symbol
                         item.Checked = False
                         self.lstTagFamilies.Items.Add(item)
+
+                        # Сохраняем доступные типоразмеры для использования в 4-й вкладке
+                        family_name = family.Name
+                        type_name = self.GetSymbolTypeName(symbol)
+
+                        if family_name not in self.available_types:
+                            self.available_types[family_name] = []
+                        if type_name not in self.available_types[family_name]:
+                            self.available_types[family_name].append(type_name)
+                            self.symbol_dict[(family_name, type_name)] = symbol
+                            self.reverse_symbol_dict[symbol.Id] = (
+                                family_name,
+                                type_name,
+                            )
 
     def GetAvailableTagFamiliesForCategory(self, category):
         tag_category_id = self.GetTagCategoryId(category)
@@ -943,6 +888,8 @@ class MainForm(Form):
         if not self.allow_tab_change:
             args.Cancel = True
         else:
+            if args.TabPageIndex == 3:  # Вкладка 4 (0-based)
+                self.PopulateTagsOnView()
             self.allow_tab_change = False
 
 
@@ -955,6 +902,7 @@ def main():
         else:
             MessageBox.Show("Нет доступа к документу Revit")
     except Exception as e:
+        print("Ошибка: " + str(e))
         MessageBox.Show("Ошибка: " + str(e))
 
 
