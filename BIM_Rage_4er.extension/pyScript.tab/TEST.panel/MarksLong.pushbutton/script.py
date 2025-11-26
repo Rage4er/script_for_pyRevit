@@ -52,11 +52,10 @@ class MainForm(Form):
         self.Load3DViews()
 
     def InitializeComponent(self):
-        """Инициализирует компоненты пользовательского интерфейса формы."""
-        print("Инициализация компонентов формы")
         self.Text = "Объединенный анализ и корректировка марок"
         self.Size = Size(750, 550)
         self.StartPosition = FormStartPosition.CenterScreen
+        self.TopMost = True
         self.tabControl = TabControl()
         self.tabControl.Dock = DockStyle.Fill
         self.tabControl.Selecting += self.OnTabSelecting
@@ -82,7 +81,6 @@ class MainForm(Form):
         return control
 
     def SetupTab1(self, tab):  # Виды
-        print("Настройка вкладки 1: Виды")
         self.txtSearchViews = self.CreateControl(
             TextBox, Location=Point(120, 35), Size=Size(140, 20)
         )
@@ -125,7 +123,6 @@ class MainForm(Form):
         self.txtSearchViews.TextChanged += self.OnSearchViewsTextChanged
 
     def SetupTab2(self, tab):  # Категории и Параметры
-        print("Настройка вкладки 2: Категории и Параметры")
         self.lstParameterSelection = ListView()
         self.lstParameterSelection.Location = Point(10, 40)
         self.lstParameterSelection.Size = Size(700, 300)
@@ -163,7 +160,6 @@ class MainForm(Form):
 
     def SetupTab3(self, tab):
         """Настраивает вкладку 3: результаты обработки."""
-        print("Настройка вкладки 3: Результаты")
         self.txtResults = self.CreateControl(
             TextBox,
             Location=Point(10, 60),
@@ -249,7 +245,6 @@ class MainForm(Form):
         self.UpdateViewsList(sender.Text)
 
     def OnNext1Click(self, sender, args):
-        print("Переход к вкладке 2: выбор видов")
         self.settings.selected_views = []
         for i in range(self.lstViews.Items.Count):
             if self.lstViews.GetItemChecked(i):
@@ -257,7 +252,7 @@ class MainForm(Form):
                     self.all_views_dict[self.lstViews.Items[i]]
                 )
         if not self.settings.selected_views:
-            print("Выберите хотя бы один вид!")
+            MessageBox.Show("Выберите хотя бы один вид!")
             return
         self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 1
@@ -368,9 +363,7 @@ class MainForm(Form):
                     )
 
             except Exception as e:
-                print(
-                    "Ошибка сбора параметров для {0}: {1}".format(category.Name, str(e))
-                )
+                pass
 
     def PopulateParameterSelection(self):
         self.lstParameterSelection.Items.Clear()
@@ -403,20 +396,18 @@ class MainForm(Form):
         form = ParameterSelectionForm(
             self.doc, category_obj, available_params, current_param
         )
-        if form.ShowDialog() == DialogResult.OK:
-            self.settings.selected_parameters[cat_id] = form.SelectedParameter
-            selected.SubItems[1].Text = form.SelectedParameter or "Не выбран"
-            print(
-                "Выбран параметр '{}' для категории '{}' (ID: {})".format(
-                    form.SelectedParameter, self.GetCategoryName(category_obj), cat_id
-                )
-            )
-            # Сохранить выбор в defaults
-            cat_name = self.GetCategoryName(category_obj)
-            if cat_name not in self.tag_defaults:
-                self.tag_defaults[cat_name] = {}
-            self.tag_defaults[cat_name]["param"] = form.SelectedParameter
-            self.SaveTagDefaults()
+        try:
+            if form.ShowDialog() == DialogResult.OK:
+                self.settings.selected_parameters[cat_id] = form.SelectedParameter
+                selected.SubItems[1].Text = form.SelectedParameter or "Не выбран"
+                # Сохранить выбор в defaults
+                cat_name = self.GetCategoryName(category_obj)
+                if cat_name not in self.tag_defaults:
+                    self.tag_defaults[cat_name] = {}
+                self.tag_defaults[cat_name]["param"] = form.SelectedParameter
+                self.SaveTagDefaults()
+        except Exception, e:
+            MessageBox.Show("Ошибка в диалоге выбора параметров: {}".format(str(e)))
 
     def OnBack2Click(self, sender, args):
         self.tabControl.Selecting -= self.OnTabSelecting
@@ -439,8 +430,8 @@ class MainForm(Form):
             try:
                 with open(defaults_path, "r") as f:
                     self.tag_defaults = json.load(f)
-            except Exception as e:
-                print("Ошибка загрузки настроек: {}".format(str(e)))
+            except Exception, e:
+                pass
 
     def SaveTagDefaults(self):
         script_dir = os.path.dirname(__file__)
@@ -448,8 +439,8 @@ class MainForm(Form):
         try:
             with open(defaults_path, "w") as f:
                 json.dump(self.tag_defaults, f, indent=4)
-        except Exception as e:
-            print("Ошибка сохранения настроек: {}".format(str(e)))
+        except Exception, e:
+            pass
 
     def generate_new_name_and_num(self, tag_type, required_length):
         name_param = tag_type.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
@@ -518,14 +509,13 @@ class MainForm(Form):
 
     # Анализ и корректировка
     def OnExecuteClick(self, sender, args):
-        """Выполняет корректировку марок на основе выбранных настроек."""
-        print(
-            "Начало обработки. Выбрано видов: {}, выбрано категорий: {}".format(
-                len(self.settings.selected_views),
-                len(self.settings.selected_categories),
-            )
-        )
+        # Скрываем консоль pyRevit для предотвращения открытия при выполнении
+        try:
+            import pyrevit
 
+            pyrevit.console.Hide()
+        except:
+            pass
         tag_categories = [
             BuiltInCategory.OST_DuctTags,
             BuiltInCategory.OST_DuctTerminalTags,
@@ -573,35 +563,22 @@ class MainForm(Form):
 
                 if tag.Category:
                     actual_category_ids.add(tag.Category.Id.IntegerValue)
-                    print(
-                        "  Категория марки ID: {}".format(tag.Category.Id.IntegerValue)
-                    )
                 else:
-                    print("  Марка без категории, пропуск")
                     continue
                 if tag.Category and tag.Category.Id.IntegerValue in [
                     c.value__ for c in tag_categories
                 ]:
                     tags_with_category += 1
-                    print("  Марка в целевой категории")
                     tagged_elements = tag.GetTaggedLocalElements()
                     if tagged_elements:
                         tags_with_elements += 1
                         element = tagged_elements[0]
                         category = element.Category
-                        print(
-                            "  Привязанный элемент ID {}, категория: {} (ID: {})".format(
-                                element.Id,
-                                self.GetCategoryName(category),
-                                category.Id.IntegerValue,
-                            )
-                        )
                         param_name = self.settings.selected_parameters.get(
                             category.Id.IntegerValue
                         )
                         if param_name:
                             tags_with_param += 1
-                            print("  Выбранный параметр: '{}'".format(param_name))
                             # Проверка instance или type параметра
                             param = element.LookupParameter(param_name)
                             if not param:
@@ -610,43 +587,22 @@ class MainForm(Form):
                                 if type_elem:
                                     param = type_elem.LookupParameter(param_name)
                             if param:
-                                print(
-                                    "  Параметр найден, HasValue: {}".format(
-                                        param.HasValue
-                                    )
-                                )
                                 if param and param.HasValue:
                                     tags_with_value += 1
-                                    value = str(param.AsString())
+                                    value = param.AsValueString()
+                                    if value is None:
+                                        value = ""
                                     char_count = len(value)
                                     required_length = math.ceil(char_count * 1.6 + 1)
-                                    print(
-                                        "  Значение параметра: '{}', длина текста: {}, требуемая длина: {}".format(
-                                            value, char_count, required_length
-                                        )
-                                    )
 
                                     # Получить базовый символ марки
                                     base_symbol = self.doc.GetElement(tag.GetTypeId())
                                     if not isinstance(base_symbol, FamilySymbol):
-                                        print(
-                                            "Марка ID {} не является FamilySymbol, пропуск".format(
-                                                tag.Id
-                                            )
-                                        )
                                         continue
                                     try:
                                         if not base_symbol.Family:
-                                            print(
-                                                "  Семейство марки не найдено, пропуск"
-                                            )
                                             continue
                                     except Exception as fam_e:
-                                        print(
-                                            "  Ошибка доступа к Family: {}".format(
-                                                str(fam_e)
-                                            )
-                                        )
                                         continue
 
                                     family_id = base_symbol.Family.Id.IntegerValue
@@ -674,11 +630,6 @@ class MainForm(Form):
                                             created_symbols[family_id][
                                                 required_length
                                             ] = new_symbol
-                                            print(
-                                                "Использован существующий символ: {} с длиной {}мм".format(
-                                                    new_name, required_length
-                                                )
-                                            )
                                         else:
                                             # Создать новый символ
                                             new_symbol = base_symbol.Duplicate(new_name)
@@ -708,19 +659,10 @@ class MainForm(Form):
                                                     shelf_set = True
                                                     break
                                             if not shelf_set:
-                                                print(
-                                                    "Предупреждение: Не удалось установить 'Длина полки' для символа {}".format(
-                                                        new_name
-                                                    )
-                                                )
+                                                pass
                                             created_symbols[family_id][
                                                 required_length
                                             ] = new_symbol
-                                            print(
-                                                "Создан новый символ: {} с длиной {}мм".format(
-                                                    new_name, required_length
-                                                )
-                                            )
 
                                     # Назначить новый символ марке
                                     new_symbol = created_symbols[family_id][
@@ -729,11 +671,6 @@ class MainForm(Form):
                                     if tag.GetTypeId() != new_symbol.Id:
                                         tag.ChangeTypeId(new_symbol.Id)
                                         changed_tags += 1
-                                        print(
-                                            "Изменен тип марки ID {} на {}".format(
-                                                tag.Id, new_name
-                                            )
-                                        )
 
                                     results.append(
                                         "Марка ID {}: присвоен тип '{}' с длиной полки {}мм".format(
@@ -741,60 +678,42 @@ class MainForm(Form):
                                         )
                                     )
                                 else:
-                                    print("  Параметр не заполнен, пропуск")
+                                    pass
                             else:
-                                print(
-                                    "  LookupParameter вернул None для '{}' на элементе {}".format(
-                                        param_name, element.Id
-                                    )
-                                )
+                                pass
                         else:
-                            print("  Параметр не выбран для категории, пропуск")
+                            pass
                     else:
-                        print("  Нет привязанных элементов, пропуск")
-                else:
-                    print("  Марка не в целевой категории, пропуск")
+                        pass
 
             trans.Commit()
         except Exception as e:
             if trans.GetStatus() == TransactionStatus.Started:
                 trans.RollBack()
-            print("Ошибка в транзакции: {}".format(str(e)))
             results.append("Ошибка: {}".format(str(e)))
         finally:
             trans.Dispose()
 
-        # Улучшенное логирование результатов
-        print(
-            "Обработка завершена: {} марок изменено, {} пропущено".format(
-                changed_tags, total_tags_all - changed_tags
-            )
-        )
+        # Повторно скрываем консоль на случай, если она открылась
+        try:
+            import pyrevit
 
-        log_text = """Полный лог обработки:
-Всего марок: {}
-Найденные IDs категорий марок: {}
-Ожидаемые IDs: {}
-С категорией: {}
-С привязанными элементами: {}
-С выбранным параметром: {}
-С заполненным значением: {}
-Изменено: {}""".format(
-            total_tags_all,
-            ", ".join(str(id) for id in sorted(actual_category_ids)),
-            ", ".join(str(c.value__) for c in tag_categories),
-            tags_with_category,
-            tags_with_elements,
-            tags_with_param,
-            tags_with_value,
-            changed_tags,
-        )
-        print(log_text)
+            pyrevit.console.Hide()
+        except:
+            pass
 
-        self.txtResults.Text = (
-            Environment.NewLine.join(results) if results else "Ничего не найдено."
-        )
-        print("Общий результат: {} записей".format(len(results)))
+        lines = [
+            "Полный лог обработки:",
+            "Всего марок: {}".format(total_tags_all),
+            "С категорией: {}".format(tags_with_category),
+            "С привязанными элементами: {}".format(tags_with_elements),
+            "С выбранным параметром: {}".format(tags_with_param),
+            "С заполненным значением: {}".format(tags_with_value),
+            "Изменено: {}".format(changed_tags),
+        ]
+        log_text = Environment.NewLine.join(lines)
+
+        self.txtResults.Text = log_text
 
     def OnTabSelecting(self, sender, args):
         args.Cancel = True
@@ -830,7 +749,7 @@ class ParameterSelectionForm(Form):
         )
         self.Size = Size(450, 400)
         self.StartPosition = FormStartPosition.CenterScreen
-
+        self.TopMost = True
         self.lblSearch = Label()
         self.lblSearch.Text = "Поиск:"
         self.lblSearch.Location = Point(10, 10)
@@ -906,7 +825,7 @@ class ParameterSelectionForm(Form):
         self.FormBorderStyle = FormBorderStyle.FixedDialog
         self.MaximizeBox = False
         self.MinimizeBox = False
-
+        self.TopMost = True
         self.lstParams = ListBox()
         self.lstParams.Location = Point(10, 40)
         self.lstParams.Size = Size(360, 200)
@@ -960,17 +879,13 @@ class ParameterSelectionForm(Form):
 
 
 def main():
-    """Главная функция скрипта: инициализация и запуск формы."""
-    print("Запуск скрипта: анализ и корректировка марок")
     try:
         doc = __revit__.ActiveUIDocument.Document
         uidoc = __revit__.ActiveUIDocument
         if doc and uidoc:
             Application.Run(MainForm(doc, uidoc))
-        else:
-            print("Нет доступа к документу Revit")
-    except Exception as e:
-        print("Ошибка: {}".format(str(e)))
+    except Exception, e:
+        pass
 
 
 if __name__ == "__main__":
