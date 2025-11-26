@@ -26,6 +26,8 @@ MM_TO_FEET = 304.8
 
 
 class Settings(object):
+    """Класс для хранения настроек скрипта: выбранные виды, категории и параметры."""
+
     def __init__(self):
         self.selected_views = []
         self.selected_categories = []
@@ -34,6 +36,8 @@ class Settings(object):
 
 
 class MainForm(Form):
+    """Главная форма скрипта для анализа и корректировки марок."""
+
     def __init__(self, doc, uidoc):
         self.doc = doc
         self.uidoc = uidoc
@@ -48,6 +52,7 @@ class MainForm(Form):
         self.Load3DViews()
 
     def InitializeComponent(self):
+        """Инициализирует компоненты пользовательского интерфейса формы."""
         print("Инициализация компонентов формы")
         self.Text = "Объединенный анализ и корректировка марок"
         self.Size = Size(750, 550)
@@ -156,7 +161,8 @@ class MainForm(Form):
         self.CollectParameters()
         self.PopulateParameterSelection()
 
-    def SetupTab3(self, tab):  # Результаты
+    def SetupTab3(self, tab):
+        """Настраивает вкладку 3: результаты обработки."""
         print("Настройка вкладки 3: Результаты")
         self.txtResults = self.CreateControl(
             TextBox,
@@ -462,7 +468,6 @@ class MainForm(Form):
         else:
             prefix = symbol_name
 
-        num = int(required_length)
         family = tag_type.Family
         existing_names = set()
         symbol_ids = family.GetFamilySymbolIds()
@@ -476,16 +481,44 @@ class MainForm(Form):
                     name = symbol.Name
                 existing_names.add(name)
 
+        target_name = "{}_{}".format(prefix, int(required_length))
+        # Проверить, существует ли символ с target_name и подходящей длиной
+        for symbol_id in symbol_ids:
+            symbol = self.doc.GetElement(symbol_id)
+            if (
+                symbol
+                and symbol.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM).AsString()
+                == target_name
+            ):
+                # Проверить длину полки
+                shelf_param_names = [
+                    "Длина полки",
+                    "Shelf Length",
+                    "Length",
+                    "Длина",
+                ]
+                for param_name in shelf_param_names:
+                    shelf_param = symbol.LookupParameter(param_name)
+                    if (
+                        shelf_param
+                        and shelf_param.HasValue
+                        and shelf_param.StorageType == StorageType.Double
+                    ):
+                        current_length = shelf_param.AsDouble() * 304.8  # в мм
+                        if abs(current_length - required_length) < 1:
+                            return target_name, int(required_length), symbol.Id
+
+        # Если не найден подходящий, создать новый уникальный
+        num = int(required_length)
         while True:
             new_name = "{}_{}".format(prefix, num)
             if new_name not in existing_names:
-                break
+                return new_name, num, None
             num += 1  # Инкремент в случае конфликта
-
-        return new_name, num
 
     # Анализ и корректировка
     def OnExecuteClick(self, sender, args):
+        """Выполняет корректировку марок на основе выбранных настроек."""
         print(
             "Начало обработки. Выбрано видов: {}, выбрано категорий: {}".format(
                 len(self.settings.selected_views),
@@ -511,141 +544,143 @@ class MainForm(Form):
         created_symbols = {}
         actual_category_ids = set()
 
+        # Кэширование маркеров для производительности
+        all_tags = []
+        for view in self.settings.selected_views:
+            collector = FilteredElementCollector(self.doc, view.Id).OfClass(
+                IndependentTag
+            )
+            all_tags.extend(collector.ToElements())
+
         # Инициализация прогресса
         self.progressBar.Value = 0
         processed_tags = 0
-        total_tags_estimated = (
-            sum(
-                len(
-                    FilteredElementCollector(self.doc, v.Id)
-                    .OfClass(IndependentTag)
-                    .ToElements()
-                )
-                for v in self.settings.selected_views
-            )
-            or 1
-        )
+        total_tags_estimated = len(all_tags) or 1
 
         trans = Transaction(self.doc, "Корректировка типоразмеров марок")
         try:
             trans.Start()
-            for view in self.settings.selected_views:
-                print("Начинаем обработку вида: {}".format(view.Name))
-                collector = FilteredElementCollector(self.doc, view.Id).OfClass(
-                    IndependentTag
-                )
-                for tag in collector:
-                    total_tags_all += 1
-                    print("Обработка марки ID {}".format(tag.Id))
+            for tag in all_tags:
+                total_tags_all += 1
+                print("Обработка марки ID {}".format(tag.Id))
 
-                    # Обновление прогресса
-                    processed_tags += 1
-                    progress = int(processed_tags * 100 / total_tags_estimated)
-                    if progress > 100:
-                        progress = 100
-                    self.progressBar.Value = progress
+                # Обновление прогресса
+                processed_tags += 1
+                progress = int(processed_tags * 100 / total_tags_estimated)
+                if progress > 100:
+                    progress = 100
+                self.progressBar.Value = progress
 
-                    if tag.Category:
-                        actual_category_ids.add(tag.Category.Id.IntegerValue)
+                if tag.Category:
+                    actual_category_ids.add(tag.Category.Id.IntegerValue)
+                    print(
+                        "  Категория марки ID: {}".format(tag.Category.Id.IntegerValue)
+                    )
+                else:
+                    print("  Марка без категории, пропуск")
+                    continue
+                if tag.Category and tag.Category.Id.IntegerValue in [
+                    c.value__ for c in tag_categories
+                ]:
+                    tags_with_category += 1
+                    print("  Марка в целевой категории")
+                    tagged_elements = tag.GetTaggedLocalElements()
+                    if tagged_elements:
+                        tags_with_elements += 1
+                        element = tagged_elements[0]
+                        category = element.Category
                         print(
-                            "  Категория марки ID: {}".format(
-                                tag.Category.Id.IntegerValue
+                            "  Привязанный элемент ID {}, категория: {} (ID: {})".format(
+                                element.Id,
+                                self.GetCategoryName(category),
+                                category.Id.IntegerValue,
                             )
                         )
-                    else:
-                        print("  Марка без категории, пропуск")
-                        continue
-                    if tag.Category and tag.Category.Id.IntegerValue in [
-                        c.value__ for c in tag_categories
-                    ]:
-                        tags_with_category += 1
-                        print("  Марка в целевой категории")
-                        tagged_elements = tag.GetTaggedLocalElements()
-                        if tagged_elements:
-                            tags_with_elements += 1
-                            element = tagged_elements[0]
-                            category = element.Category
-                            print(
-                                "  Привязанный элемент ID {}, категория: {} (ID: {})".format(
-                                    element.Id,
-                                    self.GetCategoryName(category),
-                                    category.Id.IntegerValue,
+                        param_name = self.settings.selected_parameters.get(
+                            category.Id.IntegerValue
+                        )
+                        if param_name:
+                            tags_with_param += 1
+                            print("  Выбранный параметр: '{}'".format(param_name))
+                            # Проверка instance или type параметра
+                            param = element.LookupParameter(param_name)
+                            if not param:
+                                # Проверить type parameter
+                                type_elem = self.doc.GetElement(element.GetTypeId())
+                                if type_elem:
+                                    param = type_elem.LookupParameter(param_name)
+                            if param:
+                                print(
+                                    "  Параметр найден, HasValue: {}".format(
+                                        param.HasValue
+                                    )
                                 )
-                            )
-                            param_name = self.settings.selected_parameters.get(
-                                category.Id.IntegerValue
-                            )
-                            if param_name:
-                                tags_with_param += 1
-                                print("  Выбранный параметр: '{}'".format(param_name))
-                                # Проверка instance или type параметра
-                                param = element.LookupParameter(param_name)
-                                if not param:
-                                    # Проверить type parameter
-                                    type_elem = self.doc.GetElement(element.GetTypeId())
-                                    if type_elem:
-                                        param = type_elem.LookupParameter(param_name)
-                                if param:
+                                if param and param.HasValue:
+                                    tags_with_value += 1
+                                    value = str(param.AsString())
+                                    char_count = len(value)
+                                    required_length = math.ceil(char_count * 1.6 + 1)
                                     print(
-                                        "  Параметр найден, HasValue: {}".format(
-                                            param.HasValue
+                                        "  Значение параметра: '{}', длина текста: {}, требуемая длина: {}".format(
+                                            value, char_count, required_length
                                         )
                                     )
-                                    if param and param.HasValue:
-                                        tags_with_value += 1
-                                        value = str(param.AsString())
-                                        char_count = len(value)
-                                        required_length = math.ceil(
-                                            char_count * 1.6 + 1
-                                        )
+
+                                    # Получить базовый символ марки
+                                    base_symbol = self.doc.GetElement(tag.GetTypeId())
+                                    if not isinstance(base_symbol, FamilySymbol):
                                         print(
-                                            "  Значение параметра: '{}', длина текста: {}, требуемая длина: {}".format(
-                                                value, char_count, required_length
+                                            "Марка ID {} не является FamilySymbol, пропуск".format(
+                                                tag.Id
+                                            )
+                                        )
+                                        continue
+                                    try:
+                                        if not base_symbol.Family:
+                                            print(
+                                                "  Семейство марки не найдено, пропуск"
+                                            )
+                                            continue
+                                    except Exception as fam_e:
+                                        print(
+                                            "  Ошибка доступа к Family: {}".format(
+                                                str(fam_e)
+                                            )
+                                        )
+                                        continue
+
+                                    family_id = base_symbol.Family.Id.IntegerValue
+
+                                    # Инициализировать словарь для семейства
+                                    if family_id not in created_symbols:
+                                        created_symbols[family_id] = {}
+
+                                    # Создать новый символ, если нужен
+                                    if (
+                                        required_length
+                                        not in created_symbols[family_id]
+                                    ):
+                                        new_name, shelf_num, existing_id = (
+                                            self.generate_new_name_and_num(
+                                                base_symbol, required_length
                                             )
                                         )
 
-                                        # Получить базовый символ марки
-                                        base_symbol = self.doc.GetElement(
-                                            tag.GetTypeId()
-                                        )
-                                        if not isinstance(base_symbol, FamilySymbol):
+                                        if existing_id is not None:
+                                            # Использовать существующий символ
+                                            new_symbol = self.doc.GetElement(
+                                                existing_id
+                                            )
+                                            created_symbols[family_id][
+                                                required_length
+                                            ] = new_symbol
                                             print(
-                                                "Марка ID {} не является FamilySymbol, пропуск".format(
-                                                    tag.Id
+                                                "Использован существующий символ: {} с длиной {}мм".format(
+                                                    new_name, required_length
                                                 )
                                             )
-                                            continue
-                                        try:
-                                            if not base_symbol.Family:
-                                                print(
-                                                    "  Семейство марки не найдено, пропуск"
-                                                )
-                                                continue
-                                        except Exception as fam_e:
-                                            print(
-                                                "  Ошибка доступа к Family: {}".format(
-                                                    str(fam_e)
-                                                )
-                                            )
-                                            continue
-
-                                        family_id = base_symbol.Family.Id.IntegerValue
-
-                                        # Инициализировать словарь для семейства
-                                        if family_id not in created_symbols:
-                                            created_symbols[family_id] = {}
-
-                                        # Создать новый символ, если нужен
-                                        if (
-                                            required_length
-                                            not in created_symbols[family_id]
-                                        ):
-                                            new_name, shelf_num = (
-                                                self.generate_new_name_and_num(
-                                                    base_symbol, required_length
-                                                )
-                                            )
-
+                                        else:
+                                            # Создать новый символ
                                             new_symbol = base_symbol.Duplicate(new_name)
                                             # Установить "Длина полки"
                                             shelf_param_names = [
@@ -687,38 +722,38 @@ class MainForm(Form):
                                                 )
                                             )
 
-                                        # Назначить новый символ марке
-                                        new_symbol = created_symbols[family_id][
-                                            required_length
-                                        ]
-                                        if tag.GetTypeId() != new_symbol.Id:
-                                            tag.ChangeTypeId(new_symbol.Id)
-                                            changed_tags += 1
-                                            print(
-                                                "Изменен тип марки ID {} на {}".format(
-                                                    tag.Id, new_name
-                                                )
-                                            )
-
-                                        results.append(
-                                            "Марка ID {}: присвоен тип '{}' с длиной полки {}мм".format(
-                                                tag.Id, new_name, required_length
+                                    # Назначить новый символ марке
+                                    new_symbol = created_symbols[family_id][
+                                        required_length
+                                    ]
+                                    if tag.GetTypeId() != new_symbol.Id:
+                                        tag.ChangeTypeId(new_symbol.Id)
+                                        changed_tags += 1
+                                        print(
+                                            "Изменен тип марки ID {} на {}".format(
+                                                tag.Id, new_name
                                             )
                                         )
-                                    else:
-                                        print("  Параметр не заполнен, пропуск")
-                                else:
-                                    print(
-                                        "  LookupParameter вернул None для '{}' на элементе {}".format(
-                                            param_name, element.Id
+
+                                    results.append(
+                                        "Марка ID {}: присвоен тип '{}' с длиной полки {}мм".format(
+                                            tag.Id, new_name, required_length
                                         )
                                     )
+                                else:
+                                    print("  Параметр не заполнен, пропуск")
                             else:
-                                print("  Параметр не выбран для категории, пропуск")
+                                print(
+                                    "  LookupParameter вернул None для '{}' на элементе {}".format(
+                                        param_name, element.Id
+                                    )
+                                )
                         else:
-                            print("  Нет привязанных элементов, пропуск")
+                            print("  Параметр не выбран для категории, пропуск")
                     else:
-                        print("  Марка не в целевой категории, пропуск")
+                        print("  Нет привязанных элементов, пропуск")
+                else:
+                    print("  Марка не в целевой категории, пропуск")
 
             trans.Commit()
         except Exception as e:
@@ -728,6 +763,13 @@ class MainForm(Form):
             results.append("Ошибка: {}".format(str(e)))
         finally:
             trans.Dispose()
+
+        # Улучшенное логирование результатов
+        print(
+            "Обработка завершена: {} марок изменено, {} пропущено".format(
+                changed_tags, total_tags_all - changed_tags
+            )
+        )
 
         log_text = """Полный лог обработки:
 Всего марок: {}
@@ -918,6 +960,7 @@ class ParameterSelectionForm(Form):
 
 
 def main():
+    """Главная функция скрипта: инициализация и запуск формы."""
     print("Запуск скрипта: анализ и корректировка марок")
     try:
         doc = __revit__.ActiveUIDocument.Document
@@ -927,7 +970,7 @@ def main():
         else:
             print("Нет доступа к документу Revit")
     except Exception as e:
-        print("Ошибка: " + str(e))
+        print("Ошибка: {}".format(str(e)))
 
 
 if __name__ == "__main__":
