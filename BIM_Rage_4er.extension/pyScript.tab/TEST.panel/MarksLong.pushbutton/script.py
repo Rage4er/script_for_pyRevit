@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 __title__ = "Объединенный анализ и корректировка марок"
 __author__ = "Rage"
-__doc__ = "Выбор видов, категорий, параметров; анализ марок; корректировка типоразмеров по длине полки"
-__ver__ = "1"
+__doc__ = (
+    "Автоматическа корректировка длины полки марок на виде в зависимости от содержимого"
+)
+__ver__ = "1.0"
 
 import clr
 
@@ -16,7 +18,7 @@ import math
 import os
 
 from Autodesk.Revit.DB import *
-from System import Array
+from System import Array, Environment
 from System.Drawing import *
 from System.Windows.Forms import *
 
@@ -181,16 +183,26 @@ class MainForm(Form):
             ),
             self.txtResults,
             self.progressBar,
-            self.CreateControl(Button, Text="← Назад", Location=Point(340, 450)),
+            self.CreateControl(
+                Button, Text="← Назад", Location=Point(260, 450), Size=Size(80, 30)
+            ),
+            self.CreateControl(
+                Button, Text="Завершить", Location=Point(360, 450), Size=Size(100, 30)
+            ),
             self.CreateControl(
                 Button,
                 Text="Выполнить корректировку",
-                Location=Point(500, 450),
+                Location=Point(480, 450),
                 Size=Size(170, 30),
             ),
         ]
-        self.btnBack3, self.btnExecute = controls[3], controls[4]
+        self.btnBack3, self.btnFinish, self.btnExecute = (
+            controls[3],
+            controls[4],
+            controls[5],
+        )
         self.btnBack3.Click += self.OnBack3Click
+        self.btnFinish.Click += self.OnFinishClick
         self.btnExecute.Click += self.OnExecuteClick
         for c in controls:
             tab.Controls.Add(c)
@@ -407,8 +419,70 @@ class MainForm(Form):
 
     def OnBack3Click(self, sender, args):
         self.tabControl.Selecting -= self.OnTabSelecting
-        self.tabControl.SelectedIndex = 2
+        self.tabControl.SelectedIndex = 1
         self.tabControl.Selecting += self.OnTabSelecting
+
+    def OnFinishClick(self, sender, args):
+        self.Close()
+
+    def LoadTagDefaults(self):
+        self.tag_defaults = {}
+        script_dir = os.path.dirname(__file__)
+        defaults_path = os.path.join(script_dir, "tag_defaults.json")
+        if os.path.exists(defaults_path):
+            try:
+                with open(defaults_path, "r") as f:
+                    self.tag_defaults = json.load(f)
+            except Exception as e:
+                print("Ошибка загрузки настроек: {}".format(str(e)))
+
+    def SaveTagDefaults(self):
+        script_dir = os.path.dirname(__file__)
+        defaults_path = os.path.join(script_dir, "tag_defaults.json")
+        try:
+            with open(defaults_path, "w") as f:
+                json.dump(self.tag_defaults, f, indent=4)
+        except Exception as e:
+            print("Ошибка сохранения настроек: {}".format(str(e)))
+
+    def generate_new_name_and_num(self, tag_type, required_length):
+        name_param = tag_type.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+        if name_param and name_param.HasValue:
+            symbol_name = name_param.AsString()
+        else:
+            symbol_name = tag_type.Name
+
+        parts = symbol_name.split("_")
+        if len(parts) > 1:
+            try:
+                base_num = int(parts[-1])
+                prefix = "_".join(parts[:-1])
+            except ValueError:
+                prefix = symbol_name
+        else:
+            prefix = symbol_name
+
+        num = int(required_length)
+        family = tag_type.Family
+        existing_names = set()
+        symbol_ids = family.GetFamilySymbolIds()
+        for symbol_id in symbol_ids:
+            symbol = self.doc.GetElement(symbol_id)
+            if symbol:
+                name_param = symbol.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
+                if name_param and name_param.HasValue:
+                    name = name_param.AsString()
+                else:
+                    name = symbol.Name
+                existing_names.add(name)
+
+        while True:
+            new_name = "{}_{}".format(prefix, num)
+            if new_name not in existing_names:
+                break
+            num += 1  # Инкремент в случае конфликта
+
+        return new_name, num
 
     # Анализ и корректировка
     def OnExecuteClick(self, sender, args):
@@ -675,7 +749,9 @@ class MainForm(Form):
         )
         print(log_text)
 
-        self.txtResults.Text = "\n".join(results) if results else "Ничего не найдено."
+        self.txtResults.Text = (
+            Environment.NewLine.join(results) if results else "Ничего не найдено."
+        )
         print("Общий результат: {} записей".format(len(results)))
 
     def OnTabSelecting(self, sender, args):
@@ -691,64 +767,83 @@ class MainForm(Form):
             pass
         return getattr(category, "Name", "Неизвестная категория")
 
-    def generate_new_name_and_num(self, tag_type, required_length):
-        name_param = tag_type.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
-        if name_param and name_param.HasValue:
-            symbol_name = name_param.AsString()
-        else:
-            symbol_name = tag_type.Name
 
-        parts = symbol_name.split("_")
-        if len(parts) > 1:
-            try:
-                base_num = int(parts[-1])
-                prefix = "_".join(parts[:-1])
-            except ValueError:
-                prefix = symbol_name
-        else:
-            prefix = symbol_name
+class ParameterSelectionForm(Form):
+    def __init__(self, doc, category, available_params, current_param):
+        self.doc = doc
+        self.category = category
+        self.available_params = available_params
+        self.selected_parameter = current_param
+        self.filtered_params = list(available_params)
 
-        num = int(required_length)
-        family = tag_type.Family
-        existing_names = set()
-        symbol_ids = family.GetFamilySymbolIds()
-        for symbol_id in symbol_ids:
-            symbol = self.doc.GetElement(symbol_id)
-            if symbol:
-                name_param = symbol.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
-                if name_param and name_param.HasValue:
-                    name = name_param.AsString()
-                else:
-                    name = symbol.Name
-                existing_names.add(name)
+        self.InitializeComponent()
 
-        while True:
-            new_name = "{}_{}".format(prefix, num)
-            if new_name not in existing_names:
-                break
-            num += 1  # Инкремент в случае конфликта
+    def InitializeComponent(self):
+        self.Text = "Выбор параметра для категории '{}'".format(
+            __revit__.Application.ActiveUIDocument.Document.GetCategoryName(
+                self.category
+            )
+            if self.category
+            else "Неизвестная"
+        )
+        self.Size = Size(450, 400)
+        self.StartPosition = FormStartPosition.CenterScreen
 
-        return new_name, num
+        self.lblSearch = Label()
+        self.lblSearch.Text = "Поиск:"
+        self.lblSearch.Location = Point(10, 10)
+        self.lblSearch.Size = Size(50, 20)
 
-    def LoadTagDefaults(self):
-        self.tag_defaults = {}
-        script_dir = os.path.dirname(__file__)
-        defaults_path = os.path.join(script_dir, "tag_defaults.json")
-        if os.path.exists(defaults_path):
-            try:
-                with open(defaults_path, "r") as f:
-                    self.tag_defaults = json.load(f)
-            except Exception as e:
-                print("Ошибка загрузки настроек: {}".format(str(e)))
+        self.txtSearch = TextBox()
+        self.txtSearch.Location = Point(70, 10)
+        self.txtSearch.Size = Size(200, 20)
+        self.txtSearch.TextChanged += self.OnSearchTextChanged
 
-    def SaveTagDefaults(self):
-        script_dir = os.path.dirname(__file__)
-        defaults_path = os.path.join(script_dir, "tag_defaults.json")
-        try:
-            with open(defaults_path, "w") as f:
-                json.dump(self.tag_defaults, f, indent=4)
-        except Exception as e:
-            print("Ошибка сохранения настроек: {}".format(str(e)))
+        self.lstParams = ListBox()
+        self.lstParams.Location = Point(10, 40)
+        self.lstParams.Size = Size(410, 250)
+        self.lstParams.SelectionMode = SelectionMode.One
+        self.lstParams.Items.AddRange(Array[Object](self.filtered_params))
+        if self.selected_parameter and self.selected_parameter in self.filtered_params:
+            self.lstParams.SelectedItem = self.selected_parameter
+
+        self.btnOK = Button()
+        self.btnOK.Text = "OK"
+        self.btnOK.Location = Point(120, 310)
+        self.btnOK.Size = Size(80, 30)
+        self.btnOK.Click += self.OnOKClick
+
+        self.btnCancel = Button()
+        self.btnCancel.Text = "Отмена"
+        self.btnCancel.Location = Point(220, 310)
+        self.btnCancel.Size = Size(80, 30)
+        self.btnCancel.Click += self.OnCancelClick
+
+        self.Controls.AddRange(
+            [self.lblSearch, self.txtSearch, self.lstParams, self.btnOK, self.btnCancel]
+        )
+
+    def OnSearchTextChanged(self, sender, args):
+        search_text = sender.Text.lower()
+        self.filtered_params = [
+            p for p in self.available_params if search_text in p.lower()
+        ]
+        self.lstParams.Items.Clear()
+        self.lstParams.Items.AddRange(Array[Object](self.filtered_params))
+
+    def OnOKClick(self, sender, args):
+        if self.lstParams.SelectedItem:
+            self.selected_parameter = self.lstParams.SelectedItem
+        self.DialogResult = DialogResult.OK
+        self.Close()
+
+    def OnCancelClick(self, sender, args):
+        self.DialogResult = DialogResult.Cancel
+        self.Close()
+
+    @property
+    def SelectedParameter(self):
+        return self.selected_parameter
 
 
 class ParameterSelectionForm(Form):
