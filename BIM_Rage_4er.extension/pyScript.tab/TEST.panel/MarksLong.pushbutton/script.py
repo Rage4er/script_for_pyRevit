@@ -509,6 +509,12 @@ class MainForm(Form):
 
     # Анализ и корректировка
     def OnExecuteClick(self, sender, args):
+        # Перенаправляем вывод в null для предотвращения отображения консоли
+        import os
+        import sys
+
+        sys.stdout = open(os.devnull, "w")
+        sys.stderr = open(os.devnull, "w")
         # Скрываем консоль pyRevit для предотвращения открытия при выполнении
         try:
             import pyrevit
@@ -699,6 +705,13 @@ class MainForm(Form):
             import pyrevit
 
             pyrevit.console.Hide()
+        except:
+            pass
+
+        # Восстанавливаем stdout и stderr
+        try:
+            sys.stdout.close()
+            sys.stderr.close()
         except:
             pass
 
