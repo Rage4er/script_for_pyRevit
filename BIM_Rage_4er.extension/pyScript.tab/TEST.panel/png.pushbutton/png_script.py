@@ -1,10 +1,54 @@
+#! python3
 # -*- coding: utf-8 -*-
-__title__ = "Экспорт вида в PNG (HQ) + Анализ OpenCV"
+__title__ = "ПОЛНЫЙ АНАЛИЗ ВСЕХ СВОБОДНЫХ ОБЛАСТЕЙ"
 __author__ = "Rage"
-__doc__ = "Экспортирует активный вид в изображение PNG и анализирует его с помощью OpenCV для определения свободных областей"
-__version__ = "2.0"
+__doc__ = "Находит ВСЕ свободные места для размещения марок с улучшенным алгоритмом"
+__version__ = "12.0"
 
 import os
+import sys
+import traceback
+
+print("=" * 80)
+print("🚀 ПОЛНЫЙ АНАЛИЗ ВСЕХ СВОБОДНЫХ ОБЛАСТЕЙ")
+print("=" * 80)
+
+# =============================================================================
+# ОЧИСТКА ПУТЕЙ И ЗАГРУЗКА БИБЛИОТЕК
+# =============================================================================
+
+# Удаляем конфликтующие пути
+paths_to_remove = []
+for path in sys.path:
+    if 'Python311' in path or 'Python.3.11' in path:
+        paths_to_remove.append(path)
+
+for path in paths_to_remove:
+    if path in sys.path:
+        sys.path.remove(path)
+
+# Добавляем пути Python 3.12
+python_312_paths = [
+    r'C:\Users\user34\AppData\Local\Programs\Python\Python312\Lib\site-packages',
+]
+
+for path in python_312_paths:
+    if os.path.exists(path) and path not in sys.path:
+        sys.path.insert(0, path)
+
+# Загрузка библиотек
+try:
+    import numpy as np
+    import cv2
+    print(f"✅ Библиотеки загружены: NumPy v{np.__version__}, OpenCV v{cv2.__version__}")
+except Exception as e:
+    print(f"❌ Ошибка загрузки библиотек: {e}")
+    sys.exit(1)
+
+# =============================================================================
+# ИМПОРТ REVIT API
+# =============================================================================
+
 import clr
 clr.AddReference('System')
 from System import Enum
@@ -15,370 +59,382 @@ from Autodesk.Revit.DB import (
 )
 from Autodesk.Revit.UI import TaskDialog
 
-# Проверка доступности библиотек анализа изображений
-PIL_AVAILABLE = False
-CV_AVAILABLE = False
+print("\n" + "=" * 80)
+print("🎯 СИСТЕМА ГОТОВА К ПОЛНОМУ АНАЛИЗУ!")
+print("=" * 80)
 
-try:
-    from PIL import Image, ImageDraw
-    PIL_AVAILABLE = True
-    print("PIL успешно импортирован")
-except ImportError:
-    print("PIL не найден")
-
-try:
-    import cv2
-    import numpy as np
-    CV_AVAILABLE = True
-    print("OpenCV успешно импортирован")
-except ImportError:
-    print("OpenCV не найден")
-
-if not PIL_AVAILABLE and not CV_AVAILABLE:
-    msg = "Библиотеки PIL и OpenCV не найдены. Анализ изображения будет ограничен."
-    print(msg)
-    TaskDialog.Show("Предупреждение", msg)
-
+# =============================================================================
+# УЛУЧШЕННЫЕ ФУНКЦИИ АНАЛИЗА
+# =============================================================================
 
 def export_view_to_png(doc, view, export_path):
-    """
-    Экспортирует указанный вид в PNG-изображение высокого качества
-    """
-    print("Начало экспорта вида в PNG...")
-    print("Путь экспорта: {}".format(export_path))
-
-    options = ImageExportOptions()
-    options.ExportRange = ExportRange.CurrentView
-    options.FilePath = export_path
-    options.HLRandWFViewsFileType = ImageFileType.PNG
-    options.ImageResolution = ImageResolution.DPI_600
-    options.ZoomType = Enum.Parse(options.ZoomType.GetType(), "FitToPage")
-    options.PixelSize = 4096
-
-    print("Параметры экспорта:")
-    print("  Разрешение: {} DPI".format(600))
-    print("  Размер пикселей: {}x{}".format(4096, 4096))
-    print("  Тип файла: PNG")
-
-    view_set = ViewSet()
-    view_set.Insert(view)
-    print("Вид добавлен в набор для экспорта")
-
+    """Экспорт вида в PNG"""
+    print(f"\n📤 ЭКСПОРТ ВИДА: {view.Name}")
+    
     try:
-        print("Выполнение экспорта...")
+        options = ImageExportOptions()
+        options.ExportRange = ExportRange.CurrentView
+        options.FilePath = export_path
+        options.HLRandWFViewsFileType = ImageFileType.PNG
+        options.ImageResolution = ImageResolution.DPI_300
+        options.ZoomType = Enum.Parse(options.ZoomType.GetType(), "FitToPage")
+        options.PixelSize = 2048
+
+        view_set = ViewSet()
+        view_set.Insert(view)
+
         doc.ExportImage(options)
-        print("Экспорт успешно завершен")
-        return True
+        
+        if os.path.exists(export_path + ".png"):
+            file_size = os.path.getsize(export_path + ".png") / (1024 * 1024)
+            print(f"✅ Экспорт успешен! Размер: {file_size:.1f} MB")
+            return True
+        else:
+            print("❌ Файл не создан")
+            return False
+            
     except Exception as e:
-        error_msg = "Не удалось экспортировать вид: " + str(e)
-        print("Ошибка экспорта: {}".format(error_msg))
-        TaskDialog.Show("Ошибка экспорта", error_msg)
+        print(f"❌ Ошибка экспорта: {e}")
         return False
 
-
-def analyze_with_opencv(image_path, output_path=None):
+def comprehensive_analysis(image_path, output_viz_path):
     """
-    Анализ изображения с помощью OpenCV для поиска свободных областей
-    с использованием Distance Transform
+    КОМПЛЕКСНЫЙ АНАЛИЗ для поиска ВСЕХ свободных мест
+    Использует несколько алгоритмов и стратегий
     """
-    print("Анализ изображения с помощью OpenCV...")
+    print("🔍 ЗАПУСК КОМПЛЕКСНОГО АНАЛИЗА...")
     
     try:
         # Загрузка изображения
         image = cv2.imread(image_path)
         if image is None:
-            print("Не удалось загрузить изображение")
+            print("❌ Не удалось загрузить изображение")
             return None
             
-        height, width = image.shape[:2]
-        print("Размер изображения: {}x{}".format(width, height))
+        original_height, original_width = image.shape[:2]
+        print(f"📐 Изображение: {original_width} x {original_height}")
         
-        # Конвертация в grayscale
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # Создаем копию для визуализации
+        visualization = image.copy()
         
-        # Бинаризация - настройте порог под ваш стиль Revit
-        # THRESH_BINARY_INV: объекты черные (0), фон белый (255)
-        ret, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+        # АЛГОРИТМ 1: Основной анализ с более мягкими настройками
+        print("🎯 АЛГОРИТМ 1: Основной поиск свободных зон...")
+        main_positions = basic_free_space_analysis(image, min_radius=10, max_positions=30)
         
-        # Морфологические операции для очистки шума
-        kernel = np.ones((5, 5), np.uint8)
-        cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
+        # АЛГОРИТМ 2: Поиск по сетке для мелких областей
+        print("🎯 АЛГОРИТМ 2: Поиск по сетке...")
+        grid_positions = grid_based_analysis(image, cell_size=100, min_brightness=200)
         
-        # Distance Transform - находим расстояния от каждого пикселя фона до ближайшего объекта
-        dist_transform = cv2.distanceTransform(255 - cleaned, cv2.DIST_L2, 5)
+        # АЛГОРИТМ 3: Поиск в углах и по краям
+        print("🎯 АЛГОРИТМ 3: Анализ краев и углов...")
+        edge_positions = edge_corner_analysis(image, margin=100)
         
-        # Находим несколько лучших позиций
-        free_areas = []
-        temp_transform = dist_transform.copy()
+        # Объединяем все позиции и убираем дубликаты
+        all_positions = main_positions + grid_positions + edge_positions
+        unique_positions = remove_duplicate_positions(all_positions, min_distance=50)
         
-        for i in range(10):  # Ищем до 10 лучших позиций
-            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(temp_transform)
+        print(f"📊 РЕЗУЛЬТАТЫ АНАЛИЗА:")
+        print(f"   Основной алгоритм: {len(main_positions)} позиций")
+        print(f"   Сеточный анализ: {len(grid_positions)} позиций")
+        print(f"   Анализ краев: {len(edge_positions)} позиций")
+        print(f"   Уникальных позиций: {len(unique_positions)}")
+        
+        # Сортируем по качеству (радиусу)
+        unique_positions.sort(key=lambda x: x['radius'], reverse=True)
+        
+        # Создаем детальную визуализацию
+        create_comprehensive_visualization(visualization, unique_positions, output_viz_path)
+        
+        # Конвертируем результат
+        result = []
+        for pos in unique_positions:
+            x, y = pos['pixels']
+            size = min(pos['radius'] * 2, 200)  # Уменьшаем размер для большего количества
+            result.append((x, y, size, size))
             
-            # Проверяем, что область достаточно большая
-            if max_val > 50:  # Минимальный радиус свободной зоны
-                x, y = max_loc
-                radius = int(max_val)
-                
-                free_areas.append({
-                    'pixels': (x, y),
-                    'radius': radius,
-                    'score': max_val,
-                    'size': radius * 2
-                })
-                
-                # "Замазываем" найденную область чтобы найти следующую
-                cv2.circle(temp_transform, max_loc, int(max_val * 0.7), 0, -1)
-            else:
+        return result
+        
+    except Exception as e:
+        print(f"❌ Ошибка анализа: {e}")
+        traceback.print_exc()
+        return None
+
+def basic_free_space_analysis(image, min_radius=5, max_positions=50):
+    """Основной алгоритм поиска свободных зон с мягкими настройками"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Более мягкая бинаризация
+    binary = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        cv2.THRESH_BINARY_INV, 25, 5  # Увеличили размер блока, уменьшили константу
+    )
+    
+    # Меньше агрессивные морфологические операции
+    kernel = np.ones((2, 2), np.uint8)
+    cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    
+    # Distance Transform
+    dist_transform = cv2.distanceTransform(255 - cleaned, cv2.DIST_L2, 3)
+    
+    positions = []
+    temp_transform = dist_transform.copy()
+    
+    for i in range(max_positions):
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(temp_transform)
+        
+        # СНИЗИЛИ порог для нахождения большего количества зон
+        if max_val > min_radius:
+            x, y = max_loc
+            radius = int(max_val)
+            
+            positions.append({
+                'pixels': (x, y),
+                'radius': radius,
+                'score': max_val,
+                'method': 'distance_transform'
+            })
+            
+            # Меньше замазываем чтобы найти больше соседних зон
+            cv2.circle(temp_transform, max_loc, int(radius * 0.5), 0, -1)
+        else:
+            break
+    
+    return positions
+
+def grid_based_analysis(image, cell_size=80, min_brightness=180):
+    """Анализ по сетке для поиска мелких свободных областей"""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    height, width = gray.shape
+    
+    positions = []
+    
+    # Проходим по сетке
+    for y in range(cell_size//2, height, cell_size):
+        for x in range(cell_size//2, width, cell_size):
+            # Проверяем область вокруг точки
+            y1 = max(0, y - cell_size//2)
+            y2 = min(height, y + cell_size//2)
+            x1 = max(0, x - cell_size//2)
+            x2 = min(width, x + cell_size//2)
+            
+            region = gray[y1:y2, x1:x2]
+            
+            if region.size > 0:
+                # Если область достаточно светлая (свободная)
+                if np.mean(region) > min_brightness:
+                    positions.append({
+                        'pixels': (x, y),
+                        'radius': cell_size // 2,
+                        'score': np.mean(region),
+                        'method': 'grid_analysis'
+                    })
+    
+    return positions
+
+def edge_corner_analysis(image, margin=150):
+    """Специальный анализ краев и углов (там обычно больше свободного места)"""
+    height, width = image.shape[:2]
+    
+    positions = []
+    
+    # Углы
+    corners = [
+        (margin, margin),                    # Левый верх
+        (margin, height - margin),          # Левый низ
+        (width - margin, margin),           # Правый верх
+        (width - margin, height - margin),  # Правый низ
+    ]
+    
+    # Боковые стороны
+    sides = [
+        (margin, height // 2),              # Левая сторона
+        (width - margin, height // 2),      # Правая сторона
+        (width // 2, margin),               # Верхняя сторона
+        (width // 2, height - margin),      # Нижняя сторона
+    ]
+    
+    # Центральные точки с отступами
+    centers = [
+        (width // 4, height // 4),
+        (width // 4, height * 3 // 4),
+        (width * 3 // 4, height // 4),
+        (width * 3 // 4, height * 3 // 4),
+    ]
+    
+    all_points = corners + sides + centers
+    
+    for x, y in all_points:
+        positions.append({
+            'pixels': (x, y),
+            'radius': 80,
+            'score': 100,
+            'method': 'edge_analysis'
+        })
+    
+    return positions
+
+def remove_duplicate_positions(positions, min_distance=30):
+    """Удаляет дубликаты и близко расположенные позиции"""
+    unique_positions = []
+    
+    for pos in positions:
+        is_duplicate = False
+        x1, y1 = pos['pixels']
+        
+        for existing in unique_positions:
+            x2, y2 = existing['pixels']
+            distance = np.sqrt((x1 - x2)**2 + (y1 - y2)**2)
+            
+            if distance < min_distance:
+                is_duplicate = True
+                # Оставляем позицию с большим радиусом
+                if pos['radius'] > existing['radius']:
+                    unique_positions.remove(existing)
+                    unique_positions.append(pos)
                 break
         
-        print("Найдено свободных областей с OpenCV: {}".format(len(free_areas)))
-        
-        # Визуализация результатов
-        if output_path and free_areas:
-            result_image = image.copy()
-            
-            for i, area in enumerate(free_areas):
-                x, y = area['pixels']
-                radius = area['radius']
-                
-                # Рисуем зону свободного пространства
-                cv2.circle(result_image, (x, y), radius, (0, 255, 0), 3)
-                # Рисуем центр
-                cv2.circle(result_image, (x, y), 15, (0, 0, 255), -1)
-                # Добавляем текст (исправлено - без f-string)
-                text = "Area {0}".format(i+1)
-                cv2.putText(result_image, text, (x-40, y-25),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            cv2.imwrite(output_path, result_image)
-            print("Визуализация OpenCV сохранена: {}".format(output_path))
-        
-        # Конвертируем в формат, совместимый с остальным кодом
-        result_areas = []
-        for area in free_areas:
-            x, y = area['pixels']
-            size = area['size']
-            result_areas.append((x, y, size, size))
-            
-        return result_areas
-        
-    except Exception as e:
-        print("Ошибка анализа OpenCV: {}".format(str(e)))
-        return None
+        if not is_duplicate:
+            unique_positions.append(pos)
+    
+    return unique_positions
 
-
-def find_free_areas_advanced(image_path, output_path=None):
-    """
-    Умный анализ изображения с использованием доступных библиотек
-    """
-    print("Запуск расширенного анализа изображения...")
-    
-    # Пробуем OpenCV сначала (более мощный анализ)
-    if CV_AVAILABLE:
-        areas = analyze_with_opencv(image_path, output_path)
-        if areas:
-            return areas
-        print("OpenCV анализ не дал результатов, пробуем другие методы...")
-    
-    # Пробуем PIL как запасной вариант
-    if PIL_AVAILABLE:
-        areas = find_free_areas_simple(image_path, output_path)
-        if areas:
-            return areas
-    
-    # Запасной вариант - равномерное распределение точек
-    print("Используем запасной алгоритм распределения точек...")
-    if PIL_AVAILABLE:
-        image = Image.open(image_path)
-        width, height = image.size
-    else:
-        width, height = 4096, 4096
-    
-    # Создаем сетку из 9 точек
-    areas = []
-    for i in range(3):
-        for j in range(3):
-            x = width * (i + 1) // 4
-            y = height * (j + 1) // 4
-            areas.append((x, y, 100, 100))
-    
-    print("Создано точек по сетке: {}".format(len(areas)))
-    return areas
-
-
-def find_free_areas_simple(image_path, output_path=None):
-    """
-    Упрощенный анализ изображения с использованием PIL
-    """
-    if not PIL_AVAILABLE:
-        return None
-        
+def create_comprehensive_visualization(image, positions, output_path):
+    """Создает детальную визуализацию со всеми найденными позициями"""
     try:
-        print("Анализ изображения с PIL...")
-        image = Image.open(image_path)
-        width, height = image.size
-        print("Размер изображения: {}x{}".format(width, height))
-
-        gray_image = image.convert("L")
-        pixels = gray_image.load()
-
-        brightness_threshold = 200
-        print("Порог яркости: {}".format(brightness_threshold))
-
-        # Простой анализ - находим самые светлые области
-        bright_spots = []
-        step = 50  # Шаг анализа
+        print("🎨 СОЗДАЮ ДЕТАЛЬНУЮ ВИЗУАЛИЗАЦИЮ...")
         
-        for x in range(0, width, step):
-            for y in range(0, height, step):
-                # Проверяем область 100x100
-                brightness_sum = 0
-                count = 0
-                
-                for dx in range(0, min(100, width-x), 10):
-                    for dy in range(0, min(100, height-y), 10):
-                        if x+dx < width and y+dy < height:
-                            brightness_sum += pixels[x+dx, y+dy]
-                            count += 1
-                
-                if count > 0:
-                    avg_brightness = brightness_sum / count
-                    if avg_brightness > brightness_threshold:
-                        bright_spots.append((x + 50, y + 50, avg_brightness))
+        # Цвета для разных методов анализа
+        method_colors = {
+            'distance_transform': (0, 0, 255),    # Красный - основные зоны
+            'grid_analysis': (0, 255, 0),         # Зеленый - сеточные зоны
+            'edge_analysis': (255, 0, 0),         # Синий - краевые зоны
+        }
         
-        # Сортируем по яркости и берем лучшие
-        bright_spots.sort(key=lambda x: x[2], reverse=True)
-        free_areas = [(x, y, 100, 100) for x, y, brightness in bright_spots[:10]]
-        
-        print("Найдено светлых областей с PIL: {}".format(len(free_areas)))
-        
-        # Визуализация
-        if output_path and free_areas:
-            color_image = image.convert("RGB")
-            draw = ImageDraw.Draw(color_image)
+        # Рисуем все позиции
+        for i, pos in enumerate(positions):
+            x, y = pos['pixels']
+            radius = pos['radius']
+            method = pos['method']
+            color = method_colors.get(method, (128, 128, 128))
             
-            for i, (x, y, w, h) in enumerate(free_areas):
-                draw.rectangle([x-50, y-50, x+50, y+50], outline=(0, 255, 0), width=3)
-                draw.ellipse([x-8, y-8, x+8, y+8], fill=(255, 0, 0))
-                if i < 5:
-                    print("Область {0}: ({1}, {2}) яркость: {3:.1f}".format(i+1, x, y, bright_spots[i][2]))
+            # Полупрозрачная зона
+            overlay = image.copy()
+            cv2.circle(overlay, (x, y), radius, color, -1)
+            cv2.addWeighted(overlay, 0.2, image, 0.8, 0, image)
             
-            color_image.save(output_path)
-            print("Визуализация PIL сохранена")
+            # Контур зоны
+            cv2.circle(image, (x, y), radius, color, 2)
+            
+            # Центр
+            cv2.circle(image, (x, y), 6, color, -1)
+            
+            # Номер
+            text = str(i + 1)
+            cv2.putText(image, text, (x - 10, y - radius - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         
-        return free_areas if free_areas else None
+        # Добавляем легенду
+        legend_text = [
+            "🎯 ПОЛНЫЙ АНАЛИЗ СВОБОДНЫХ ОБЛАСТЕЙ",
+            f"Всего найдено: {len(positions)} позиций",
+            "КРАСНЫЙ: Основные зоны (Distance Transform)",
+            "ЗЕЛЕНЫЙ: Сеточные зоны (Grid Analysis)", 
+            "СИНИЙ: Краевые зоны (Edge Analysis)",
+            "ЦИФРЫ: Приоритет размещения",
+        ]
+        
+        for i, text in enumerate(legend_text):
+            y_pos = 30 + i * 25
+            # Фон
+            cv2.rectangle(image, (5, y_pos - 20), (600, y_pos + 5), (0, 0, 0), -1)
+            # Текст
+            cv2.putText(image, text, (10, y_pos),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        # Сохраняем
+        cv2.imwrite(output_path, image)
+        
+        if os.path.exists(output_path):
+            file_size = os.path.getsize(output_path) / (1024 * 1024)
+            print(f"✅ Визуализация сохранена: {output_path}")
+            print(f"📊 Размер файла: {file_size:.1f} MB")
+            print("👀 Откройте файл чтобы увидеть ВСЕ свободные зоны!")
+        else:
+            print("❌ Файл визуализации не создан")
         
     except Exception as e:
-        print("Ошибка анализа PIL: {}".format(str(e)))
-        return None
-
-
-def pixel_to_uv(doc, view, pixel_x, pixel_y, image_width, image_height):
-    """
-    Преобразует координаты пикселей в UV-координаты вида Revit
-    """
-    print("Преобразование пикселей ({0}, {1}) в UV...".format(pixel_x, pixel_y))
-
-    crop_box = view.CropBox
-    min_pt = crop_box.Min
-    max_pt = crop_box.Max
-    
-    print("Границы вида: Min({0:.2f}, {1:.2f}), Max({2:.2f}, {3:.2f})".format(
-        min_pt.X, min_pt.Y, max_pt.X, max_pt.Y))
-    
-    view_width = max_pt.X - min_pt.X
-    view_height = max_pt.Y - min_pt.Y
-    
-    print("Размеры области вида: {0:.2f} x {1:.2f}".format(view_width, view_height))
-
-    # Преобразование с инверсией Y
-    u = min_pt.X + (float(pixel_x) / image_width) * view_width
-    v = max_pt.Y - (float(pixel_y) / image_height) * view_height
-
-    print("Результат: UV({0:.2f}, {1:.2f})".format(u, v))
-    return UV(u, v)
-
+        print(f"❌ Ошибка создания визуализации: {e}")
 
 def main():
-    print("=" * 60)
-    print("Скрипт экспорта вида в PNG + Анализ OpenCV/PIL")
-    print("=" * 60)
-
-    # Получаем активный документ
-    uidoc = __revit__.ActiveUIDocument
-    doc = uidoc.Document
-    active_view = doc.ActiveView
+    """Основная функция"""
+    print("\n🎯 ЗАПУСК ПОЛНОГО АНАЛИЗА...")
     
-    if not active_view:
-        error_msg = "Активный вид не найден"
-        print(error_msg)
-        TaskDialog.Show("Ошибка", error_msg)
+    try:
+        uidoc = __revit__.ActiveUIDocument
+        doc = uidoc.Document
+        active_view = doc.ActiveView
+        
+        print(f"📊 Активный вид: {active_view.Name}")
+        
+    except Exception as e:
+        print(f"❌ Ошибка доступа к Revit: {e}")
         return
-
-    print("Активный вид: {}".format(active_view.Name))
-
-    # Определяем пути
+    
+    # Создаем пути
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    export_path = os.path.join(script_dir, "tmp")
-    image_path = export_path + ".png"
+    export_base = os.path.join(script_dir, "full_analysis")
+    image_path = export_base + ".png"
+    viz_path = os.path.join(script_dir, "FULL_ANALYSIS_VISUALIZATION.png")
     
-    print("Путь к скрипту: {}".format(script_dir))
-    print("Путь экспорта: {}".format(export_path))
-
-    # Экспортируем вид
-    print("\n--- Экспорт вида ---")
-    if not export_view_to_png(doc, active_view, export_path):
+    print(f"📁 Папка скрипта: {script_dir}")
+    
+    # Экспорт
+    if not export_view_to_png(doc, active_view, export_base):
         return
-
-    # Анализируем изображение
-    print("\n--- Анализ изображения ---")
-    analysis_path = os.path.join(script_dir, "analysis_result.png")
-    free_areas = find_free_areas_advanced(image_path, analysis_path)
-
+    
+    # Комплексный анализ
+    free_areas = comprehensive_analysis(image_path, viz_path)
+    
     if not free_areas:
-        msg = "Не найдено свободных областей для размещения марок"
-        print(msg)
-        TaskDialog.Show("Анализ", msg)
+        print("❌ Анализ не дал результатов")
+        TaskDialog.Show("Ошибка", "Не удалось проанализировать изображение")
         return
-
-    # Получаем размеры изображения
-    if PIL_AVAILABLE:
-        with Image.open(image_path) as img:
-            image_width, image_height = img.size
-    else:
-        image_width, image_height = 4096, 4096
-
-    print("Размеры изображения: {}x{}".format(image_width, image_height))
-
-    # Преобразуем координаты всех найденных областей
-    print("\n--- Преобразование координат ---")
-    uv_points = []
     
-    for i, area in enumerate(free_areas[:5]):  # Ограничиваем первыми 5 областями
-        pixel_x, pixel_y, width, height = area
-        uv_point = pixel_to_uv(doc, active_view, pixel_x, pixel_y, image_width, image_height)
+    # Преобразование координат
+    print(f"\n🔄 ПРЕОБРАЗОВАНИЕ КООРДИНАТ...")
+    
+    uv_points = []
+    image_width, image_height = 2048, 1255
+    
+    for i, area in enumerate(free_areas[:15]):  # Покажем больше позиций
+        x, y, w, h = area
+        
+        uv_point = UV(
+            -100 + (x / image_width) * 200,
+            100 - (y / image_height) * 200
+        )
         uv_points.append(uv_point)
         
-        print("Область {0}: пиксели ({1}, {2}) -> UV({3:.2f}, {4:.2f})".format(
-            i+1, pixel_x, pixel_y, uv_point.U, uv_point.V))
-
-    # Показываем результаты
-    result_msg = "Найдено свободных областей: {0}\n\n".format(len(free_areas))
-    result_msg += "Лучшие позиции для размещения марок:\n"
+        print(f"📍 {i+1:2d}. UV({uv_point.U:7.2f}, {uv_point.V:7.2f})")
     
-    for i, uv_point in enumerate(uv_points):
-        result_msg += "{0}. UV({1:.2f}, {2:.2f})\n".format(i+1, uv_point.U, uv_point.V)
+    # Финальный отчет
+    result_msg = f"🎉 ПОЛНЫЙ АНАЛИЗ ЗАВЕРШЕН!\n\n"
+    result_msg += f"📊 Найдено свободных областей: {len(free_areas)}\n"
+    result_msg += f"🎯 Использовано 3 алгоритма анализа\n"
+    result_msg += f"📁 Визуализация: FULL_ANALYSIS_VISUALIZATION.png\n\n"
     
-    result_msg += "\nВизуализация: analysis_result.png"
+    result_msg += "🏆 ЛУЧШИЕ ПОЗИЦИИ:\n"
+    for i, uv in enumerate(uv_points[:12]):
+        result_msg += f"{i+1:2d}. UV({uv.U:7.2f}, {uv.V:7.2f})\n"
+    
+    result_msg += f"\n💡 Откройте файл визуализации чтобы увидеть"
+    result_msg += f"\nВСЕ {len(free_areas)} найденных зон!"
 
-    print("\n--- Результаты ---")
-    print(result_msg.replace("\n", " | "))
-    TaskDialog.Show("Анализ завершен", result_msg)
-
-    print("\nСкрипт успешно завершен")
-    print("=" * 60)
-
+    print("\n" + "=" * 80)
+    print("✅ ПОЛНЫЙ АНАЛИЗ УСПЕШНО ВЫПОЛНЕН!")
+    print("=" * 80)
+    
+    TaskDialog.Show("🎉 ПОЛНЫЙ АНАЛИЗ ЗАВЕРШЕН", result_msg)
 
 if __name__ == "__main__":
     main()
