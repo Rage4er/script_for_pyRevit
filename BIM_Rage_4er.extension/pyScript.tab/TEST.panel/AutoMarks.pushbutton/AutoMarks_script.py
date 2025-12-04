@@ -1,25 +1,30 @@
 # -*- coding: utf-8 -*-
-__title__ = 'Марки на 3D'
-__author__ = 'Rage'
-__doc__ = 'Автоматическое размещение маркировочных меток на 3D-видах'
+__title__ = """Марки
+ на 3D"""
+__author__ = "Rage"
+__doc__ = "Автоматическое размещение марок на 3D-видах"
+__version__ = "1.0"
 
 import clr
-clr.AddReference('RevitAPI')
-clr.AddReference('RevitAPIUI')
-clr.AddReference('System.Windows.Forms')
-clr.AddReference('System.Drawing')
+
+clr.AddReference("RevitAPI")
+clr.AddReference("RevitAPIUI")
+clr.AddReference("System.Windows.Forms")
+clr.AddReference("System.Drawing")
+
+import datetime
+import json
+import os
 
 from Autodesk.Revit.DB import *
-from System.Windows.Forms import *
 from System.Drawing import *
-import datetime
-import os
-import json
+from System.Windows.Forms import *
 
 # Константы
 MM_TO_FEET = 304.8
 DEFAULT_OFFSET_X = 60.0
 DEFAULT_OFFSET_Y = 30.0
+
 
 # Логирование
 class Logger:
@@ -30,6 +35,7 @@ class Logger:
         messages (list): Список сообщений лога.
         enabled (bool): Флаг включения логирования.
     """
+
     def __init__(self, enabled=False):
         """
         Инициализирует логгер.
@@ -73,6 +79,7 @@ class Logger:
         form.Controls.Add(textbox)
         form.ShowDialog()
 
+
 # Настройки
 class TagSettings(object):
     """
@@ -89,6 +96,7 @@ class TagSettings(object):
         use_leader (bool): Использовать выноску.
         enable_logging (bool): Включить логирование.
     """
+
     def __init__(self):
         """
         Инициализирует настройки с значениями по умолчанию.
@@ -102,7 +110,6 @@ class TagSettings(object):
         self.orientation = TagOrientation.Horizontal
         self.use_leader = True
         self.enable_logging = False
-
 
 
 # Главная форма
@@ -119,6 +126,7 @@ class MainForm(Form):
         logger (Logger): Экземпляр логгера.
         tag_defaults (dict): Словарь дефолтных марок по категориям.
     """
+
     def __init__(self, doc, uidoc):
         """
         Инициализирует главную форму.
@@ -151,11 +159,17 @@ class MainForm(Form):
         self.tabControl.Dock = DockStyle.Fill
         self.tabControl.Selecting += self.OnTabSelecting
 
-        tabs = ["1. Выбор видов", "2. Категории", "3. Марки", "4. Настройки", "5. Выполнение"]
+        tabs = [
+            "1. Выбор видов",
+            "2. Категории",
+            "3. Марки",
+            "4. Настройки",
+            "5. Выполнение",
+        ]
         for i, text in enumerate(tabs):
             tab = TabPage()
             tab.Text = text
-            getattr(self, "SetupTab" + str(i+1))(tab)
+            getattr(self, "SetupTab" + str(i + 1))(tab)
             self.tabControl.TabPages.Add(tab)
 
         self.Controls.Add(self.tabControl)
@@ -202,21 +216,79 @@ class MainForm(Form):
         Args:
             tab (TabPage): Вкладка для настройки.
         """
-        self.txtSearchViews = self.CreateControl(TextBox, Location=Point(120, 35), Size=Size(140, 20))
-        self.btnSelectAll = self.CreateButton(text="Выбрать все", location=Point(270, 35), size=Size(100, 25), click_handler=self.OnSelectAllViews)
-        self.btnDeselectAll = self.CreateButton(text="Снять выбор", location=Point(380, 35), size=Size(100, 25), click_handler=self.OnDeselectAllViews)
+        self.txtSearchViews = self.CreateControl(
+            TextBox, Location=Point(120, 35), Size=Size(140, 20)
+        )
+        self.btnSelectAll = self.CreateButton(
+            text="Выбрать все",
+            location=Point(270, 35),
+            size=Size(100, 25),
+            click_handler=self.OnSelectAllViews,
+        )
+        self.btnDeselectAll = self.CreateButton(
+            text="Снять выбор",
+            location=Point(380, 35),
+            size=Size(100, 25),
+            click_handler=self.OnDeselectAllViews,
+        )
         controls = [
-            self.CreateControl(Label, Text="Выберите 3D виды:", Location=Point(10, 10), Size=Size(300, 20)),
-            self.CreateControl(Label, Text="Поиск:", Location=Point(70, 35), Size=Size(50, 20)),
+            self.CreateControl(
+                Label,
+                Text="Выберите 3D виды:",
+                Location=Point(10, 10),
+                Size=Size(300, 20),
+            ),
+            self.CreateControl(
+                Label, Text="Поиск:", Location=Point(70, 35), Size=Size(50, 20)
+            ),
             self.txtSearchViews,
             self.btnSelectAll,
             self.btnDeselectAll,
-            self.CreateControl(CheckedListBox, Location=Point(10, 65), Size=Size(600, 360), CheckOnClick=True),
-            self.CreateControl(CheckBox, Text="Включить логирование", Location=Point(10, 440), Size=Size(200, 20)),
-            self.CreateButton(text="Показать логи", location=Point(220, 440), size=Size(100, 25), click_handler=self.OnShowLogsClick),
-            self.CreateButton(text="Далее →", location=Point(600, 440), click_handler=self.OnNext1Click)
+            self.CreateControl(
+                CheckedListBox,
+                Location=Point(10, 65),
+                Size=Size(600, 360),
+                CheckOnClick=True,
+            ),
+            self.CreateControl(
+                CheckBox,
+                Text="Включить логирование",
+                Location=Point(10, 440),
+                Size=Size(200, 20),
+            ),
+            self.CreateButton(
+                text="Показать логи",
+                location=Point(220, 440),
+                size=Size(100, 25),
+                click_handler=self.OnShowLogsClick,
+            ),
+            self.CreateButton(
+                text="Далее →",
+                location=Point(600, 440),
+                click_handler=self.OnNext1Click,
+            ),
         ]
-        self.lblViews, self.lblSearch, self.txtSearchViews, self.btnSelectAll, self.btnDeselectAll, self.lstViews, self.chkLogging, self.btnShowLogs, self.btnNext1 = controls[0], controls[1], controls[2], controls[3], controls[4], controls[5], controls[6], controls[7], controls[8]
+        (
+            self.lblViews,
+            self.lblSearch,
+            self.txtSearchViews,
+            self.btnSelectAll,
+            self.btnDeselectAll,
+            self.lstViews,
+            self.chkLogging,
+            self.btnShowLogs,
+            self.btnNext1,
+        ) = (
+            controls[0],
+            controls[1],
+            controls[2],
+            controls[3],
+            controls[4],
+            controls[5],
+            controls[6],
+            controls[7],
+            controls[8],
+        )
         self.chkLogging.CheckedChanged += self.OnLoggingCheckedChanged
         self.txtSearchViews.TextChanged += self.OnSearchViewsTextChanged
         for c in controls:
@@ -230,10 +302,24 @@ class MainForm(Form):
             tab (TabPage): Вкладка для настройки.
         """
         controls = [
-            self.CreateControl(Label, Text="Выберите категории элементов:", Location=Point(10, 10), Size=Size(300, 20)),
-            self.CreateControl(CheckedListBox, Location=Point(10, 40), Size=Size(600, 400), CheckOnClick=True),
-            self.CreateButton("← Назад", Point(500, 450), click_handler=self.OnBack1Click),
-            self.CreateButton("Далее →", Point(600, 450), click_handler=self.OnNext2Click)
+            self.CreateControl(
+                Label,
+                Text="Выберите категории элементов:",
+                Location=Point(10, 10),
+                Size=Size(300, 20),
+            ),
+            self.CreateControl(
+                CheckedListBox,
+                Location=Point(10, 40),
+                Size=Size(600, 400),
+                CheckOnClick=True,
+            ),
+            self.CreateButton(
+                "← Назад", Point(500, 450), click_handler=self.OnBack1Click
+            ),
+            self.CreateButton(
+                "Далее →", Point(600, 450), click_handler=self.OnNext2Click
+            ),
         ]
         self.lblCategories, self.lstCategories, self.btnBack1, self.btnNext2 = controls
         for c in controls:
@@ -258,10 +344,19 @@ class MainForm(Form):
         self.lstTagFamilies.DoubleClick += self.OnTagFamilyDoubleClick
 
         controls = [
-            self.CreateControl(Label, Text="Выберите марки для категорий:", Location=Point(10, 10), Size=Size(400, 20)),
+            self.CreateControl(
+                Label,
+                Text="Выберите марки для категорий:",
+                Location=Point(10, 10),
+                Size=Size(400, 20),
+            ),
             self.lstTagFamilies,
-            self.CreateButton("← Назад", Point(500, 450), click_handler=self.OnBack2Click),
-            self.CreateButton("Далее →", Point(600, 450), click_handler=self.OnNext3Click)
+            self.CreateButton(
+                "← Назад", Point(500, 450), click_handler=self.OnBack2Click
+            ),
+            self.CreateButton(
+                "Далее →", Point(600, 450), click_handler=self.OnNext3Click
+            ),
         ]
         for c in controls:
             tab.Controls.Add(c)
@@ -287,12 +382,23 @@ class MainForm(Form):
         self.chkUseLeader.Checked = True
 
         controls = [
-            self.CreateControl(Label, Text="Настройки размещения:", Location=Point(10, 10), Size=Size(300, 20)),
-            self.CreateControl(Label, Text="Ориентация:", Location=Point(10, 50), Size=Size(150, 20)),
+            self.CreateControl(
+                Label,
+                Text="Настройки размещения:",
+                Location=Point(10, 10),
+                Size=Size(300, 20),
+            ),
+            self.CreateControl(
+                Label, Text="Ориентация:", Location=Point(10, 50), Size=Size(150, 20)
+            ),
             self.cmbOrientation,
             self.chkUseLeader,
-            self.CreateButton("← Назад", Point(500, 450), click_handler=self.OnBack3Click),
-            self.CreateButton("Далее →", Point(600, 450), click_handler=self.OnNext4Click)
+            self.CreateButton(
+                "← Назад", Point(500, 450), click_handler=self.OnBack3Click
+            ),
+            self.CreateButton(
+                "Далее →", Point(600, 450), click_handler=self.OnNext4Click
+            ),
         ]
         for c in controls:
             tab.Controls.Add(c)
@@ -318,11 +424,23 @@ class MainForm(Form):
         self.progressBar.Maximum = 100
 
         controls = [
-            self.CreateControl(Label, Text="Готово к выполнению:", Location=Point(10, 10), Size=Size(300, 20)),
+            self.CreateControl(
+                Label,
+                Text="Готово к выполнению:",
+                Location=Point(10, 10),
+                Size=Size(300, 20),
+            ),
             self.txtSummary,
             self.progressBar,
-            self.CreateButton("← Назад", Point(340, 450), click_handler=self.OnBack4Click),
-            self.CreateButton("Выполнить", Point(500, 450), Size(150, 30), click_handler=self.OnExecuteClick)
+            self.CreateButton(
+                "← Назад", Point(340, 450), click_handler=self.OnBack4Click
+            ),
+            self.CreateButton(
+                "Выполнить",
+                Point(500, 450),
+                Size(150, 30),
+                click_handler=self.OnExecuteClick,
+            ),
         ]
         for c in controls:
             tab.Controls.Add(c)
@@ -332,7 +450,12 @@ class MainForm(Form):
         Загружает список 3D-видов в список.
         """
         try:
-            views = FilteredElementCollector(self.doc).OfClass(View3D).WhereElementIsNotElementType().ToElements()
+            views = (
+                FilteredElementCollector(self.doc)
+                .OfClass(View3D)
+                .WhereElementIsNotElementType()
+                .ToElements()
+            )
             self.lstViews.Items.Clear()
             self.all_views_dict.clear()
             self.views_dict.clear()
@@ -439,7 +562,11 @@ class MainForm(Form):
         self.tabControl.Selecting += self.OnTabSelecting
 
     def OnNext4Click(self, sender, args):
-        self.settings.orientation = TagOrientation.Horizontal if self.cmbOrientation.SelectedIndex == 0 else TagOrientation.Vertical
+        self.settings.orientation = (
+            TagOrientation.Horizontal
+            if self.cmbOrientation.SelectedIndex == 0
+            else TagOrientation.Vertical
+        )
         self.settings.use_leader = self.chkUseLeader.Checked
         self.txtSummary.Text = self.GenerateSummary()
         self.tabControl.Selecting -= self.OnTabSelecting
@@ -450,14 +577,17 @@ class MainForm(Form):
         self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 0
         self.tabControl.Selecting += self.OnTabSelecting
+
     def OnBack2Click(self, sender, args):
         self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 1
         self.tabControl.Selecting += self.OnTabSelecting
+
     def OnBack3Click(self, sender, args):
         self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 2
         self.tabControl.Selecting += self.OnTabSelecting
+
     def OnBack4Click(self, sender, args):
         self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 3
@@ -470,13 +600,16 @@ class MainForm(Form):
         args.Cancel = True
 
     def CollectCategories(self):
+        """
+        Собирает категории элементов для маркировки.
+        """
         categories = [
             BuiltInCategory.OST_DuctCurves,
             BuiltInCategory.OST_FlexDuctCurves,
             BuiltInCategory.OST_DuctInsulations,
             BuiltInCategory.OST_DuctTerminal,
             BuiltInCategory.OST_DuctAccessory,
-            BuiltInCategory.OST_MechanicalEquipment
+            BuiltInCategory.OST_MechanicalEquipment,
         ]
 
         unique_cats = set()
@@ -492,20 +625,178 @@ class MainForm(Form):
         self.lstCategories.Items.Clear()
         self.category_mapping.clear()
 
-        for cat in sorted(self.settings.selected_categories, key=lambda x: self.GetCategoryName(x)):
+        for cat in sorted(
+            self.settings.selected_categories, key=lambda x: self.GetCategoryName(x)
+        ):
             name = self.GetCategoryName(cat)
             self.lstCategories.Items.Add(name, True)
             self.category_mapping[name] = cat
+
+    def GetDuctsToTag(self, duct_elements):
+        """
+        Отбирает воздуховоды для маркировки, оставляя только самый длинный в каждой группе.
+        Группировка по "Имя системы" -> "Сечение".
+
+        Args:
+            duct_elements (list): Список элементов воздуховодов.
+
+        Returns:
+            list: Список элементов воздуховодов для маркировки.
+        """
+        # Словарь для группировки: {system_name: {section: [ducts]}}
+        groups = {}
+
+        # Группируем воздуховоды
+        for duct in duct_elements:
+            try:
+                # Получаем параметр "Имя системы"
+                system_name_param = duct.LookupParameter("Имя системы")
+                if not system_name_param:
+                    # Пытаемся найти параметр по BuiltInParameter
+                    system_name_param = duct.get_Parameter(
+                        BuiltInParameter.RBS_SYSTEM_NAME_PARAM
+                    )
+
+                system_name = ""
+                if system_name_param and system_name_param.HasValue:
+                    if system_name_param.StorageType == StorageType.String:
+                        system_name = system_name_param.AsString()
+                    else:
+                        system_name = system_name_param.AsValueString()
+
+                # Получаем параметр "Сечение"
+                section_param = duct.LookupParameter("Сечение")
+                if not section_param:
+                    # Для воздуховодов сечение можно получить из размеров
+                    section = self.GetDuctSection(duct)
+                else:
+                    section = ""
+                    if section_param.HasValue:
+                        if section_param.StorageType == StorageType.String:
+                            section = section_param.AsString()
+                        else:
+                            section = section_param.AsValueString()
+
+                # Получаем длину воздуховода
+                length_param = duct.LookupParameter("Длина")
+                if not length_param:
+                    length_param = duct.get_Parameter(
+                        BuiltInParameter.CURVE_ELEM_LENGTH
+                    )
+
+                length = 0.0
+                if length_param and length_param.HasValue:
+                    if length_param.StorageType == StorageType.Double:
+                        length = length_param.AsDouble()
+                    else:
+                        length = float(length_param.AsValueString().replace(",", "."))
+
+                # Создаем ключи для группировки
+                if system_name not in groups:
+                    groups[system_name] = {}
+
+                if section not in groups[system_name]:
+                    groups[system_name][section] = []
+
+                # Добавляем воздуховод в группу
+                groups[system_name][section].append({"element": duct, "length": length})
+
+            except Exception as e:
+                self.logger.add(
+                    "Ошибка обработки воздуховода {0}: {1}".format(duct.Id, e)
+                )
+                continue
+
+        # Отбираем самые длинные воздуховоды в каждой группе
+        selected_ducts = []
+        for system_name, sections in groups.items():
+            for section, ducts in sections.items():
+                if ducts:
+                    # Находим воздуховод с максимальной длиной
+                    longest_duct = max(ducts, key=lambda x: x["length"])
+                    selected_ducts.append(longest_duct["element"])
+                    self.logger.add(
+                        "Выбран воздуховод ID {0} для системы '{1}', сечения '{2}', длина {3:.2f}".format(
+                            longest_duct["element"].Id,
+                            system_name,
+                            section,
+                            longest_duct["length"],
+                        )
+                    )
+
+        return selected_ducts
+
+    def GetDuctSection(self, duct):
+        """
+        Получает сечение воздуховода.
+
+        Args:
+            duct (Element): Элемент воздуховода.
+
+        Returns:
+            str: Строка с описанием сечения.
+        """
+        try:
+            # Для круглых воздуховодов
+            diameter_param = duct.LookupParameter("Диаметр")
+            if not diameter_param:
+                diameter_param = duct.get_Parameter(
+                    BuiltInParameter.RBS_CURVE_DIAMETER_PARAM
+                )
+
+            if diameter_param and diameter_param.HasValue:
+                if diameter_param.StorageType == StorageType.Double:
+                    diameter = diameter_param.AsDouble() * 304.8  # в мм
+                    return "Ø{:.0f}".format(diameter)
+
+            # Для прямоугольных воздуховодов
+            width_param = duct.LookupParameter("Ширина")
+            if not width_param:
+                width_param = duct.get_Parameter(BuiltInParameter.RBS_CURVE_WIDTH_PARAM)
+
+            height_param = duct.LookupParameter("Высота")
+            if not height_param:
+                height_param = duct.get_Parameter(
+                    BuiltInParameter.RBS_CURVE_HEIGHT_PARAM
+                )
+
+            if (
+                width_param
+                and height_param
+                and width_param.HasValue
+                and height_param.HasValue
+            ):
+                width = 0.0
+                height = 0.0
+
+                if width_param.StorageType == StorageType.Double:
+                    width = width_param.AsDouble() * 304.8  # в мм
+                else:
+                    width = float(width_param.AsValueString().replace(",", "."))
+
+                if height_param.StorageType == StorageType.Double:
+                    height = height_param.AsDouble() * 304.8  # в мм
+                else:
+                    height = float(height_param.AsValueString().replace(",", "."))
+
+                return "{:.0f}x{:.0f}".format(width, height)
+
+            return "Не определено"
+        except Exception as e:
+            self.logger.add(
+                "Ошибка получения сечения воздуховода {0}: {1}".format(duct.Id, e)
+            )
+            return "Ошибка"
 
     def GetCategoryName(self, category):
         if not category:
             return "Неизвестная категория"
         try:
-            if hasattr(category, 'Id') and category.Id.IntegerValue < 0:
+            if hasattr(category, "Id") and category.Id.IntegerValue < 0:
                 return LabelUtils.GetLabelFor(BuiltInCategory(category.Id.IntegerValue))
         except Exception as e:
             self.logger.add("Ошибка получения имени категории: {0}".format(e))
-        return getattr(category, 'Name', 'Неизвестная категория')
+        return getattr(category, "Name", "Неизвестная категория")
 
     def PopulateTagFamilies(self):
         self.lstTagFamilies.Items.Clear()
@@ -551,10 +842,12 @@ class MainForm(Form):
             return None, None
 
         collector = FilteredElementCollector(self.doc)
-        tag_families = collector.OfClass(Family).WhereElementIsNotElementType().ToElements()
+        tag_families = (
+            collector.OfClass(Family).WhereElementIsNotElementType().ToElements()
+        )
 
         for family in tag_families:
-            if not family or not hasattr(family, 'FamilyCategory'):
+            if not family or not hasattr(family, "FamilyCategory"):
                 continue
 
             if family.FamilyCategory and family.FamilyCategory.Id == tag_category_id:
@@ -578,11 +871,11 @@ class MainForm(Form):
             BuiltInCategory.OST_DuctTerminal: BuiltInCategory.OST_DuctTerminalTags,
             BuiltInCategory.OST_DuctAccessory: BuiltInCategory.OST_DuctAccessoryTags,
             BuiltInCategory.OST_DuctInsulations: BuiltInCategory.OST_DuctInsulationsTags,
-            BuiltInCategory.OST_MechanicalEquipment: BuiltInCategory.OST_MechanicalEquipmentTags
+            BuiltInCategory.OST_MechanicalEquipment: BuiltInCategory.OST_MechanicalEquipmentTags,
         }
 
         try:
-            if hasattr(element_category, 'Id') and element_category.Id.IntegerValue < 0:
+            if hasattr(element_category, "Id") and element_category.Id.IntegerValue < 0:
                 element_cat = BuiltInCategory(element_category.Id.IntegerValue)
                 if element_cat in mapping:
                     tag_cat = Category.GetCategory(self.doc, mapping[element_cat])
@@ -598,13 +891,17 @@ class MainForm(Form):
         try:
             # Для FamilySymbol (типоразмеров)
             if isinstance(element, FamilySymbol):
-                if hasattr(element, 'Name') and element.Name:
+                if hasattr(element, "Name") and element.Name:
                     name = element.Name
-                    if name and not name.startswith('IronPython'):
+                    if name and not name.startswith("IronPython"):
                         return name
 
-                if hasattr(element, 'Family') and element.Family:
-                    family_name = element.Family.Name if hasattr(element.Family, 'Name') and element.Family.Name else ""
+                if hasattr(element, "Family") and element.Family:
+                    family_name = (
+                        element.Family.Name
+                        if hasattr(element.Family, "Name") and element.Family.Name
+                        else ""
+                    )
 
                     # Пробуем получить имя типа через параметры
                     type_name = ""
@@ -625,20 +922,22 @@ class MainForm(Form):
 
             # Для Family (семейств)
             elif isinstance(element, Family):
-                if hasattr(element, 'Name') and element.Name:
+                if hasattr(element, "Name") and element.Name:
                     name = element.Name
-                    if name and not name.startswith('IronPython'):
+                    if name and not name.startswith("IronPython"):
                         return name
                 return "Семейство " + str(element.Id.IntegerValue)
 
             # Общий случай
-            if hasattr(element, 'Name') and element.Name:
+            if hasattr(element, "Name") and element.Name:
                 name = element.Name
-                if name and not name.startswith('IronPython'):
+                if name and not name.startswith("IronPython"):
                     return name
 
         except Exception as e:
-            self.logger.add("GetElementName: Ошибка при получении имени элемента: {0}".format(e))
+            self.logger.add(
+                "GetElementName: Ошибка при получении имени элемента: {0}".format(e)
+            )
 
         return "Элемент " + str(element.Id.IntegerValue)
 
@@ -654,8 +953,14 @@ class MainForm(Form):
             current_family = self.settings.category_tag_families.get(category)
             current_type = self.settings.category_tag_types.get(category)
 
-            form = TagFamilySelectionForm(self.doc, available_families, current_family, current_type)
-            if form.ShowDialog() == DialogResult.OK and form.SelectedFamily and form.SelectedType:
+            form = TagFamilySelectionForm(
+                self.doc, available_families, current_family, current_type
+            )
+            if (
+                form.ShowDialog() == DialogResult.OK
+                and form.SelectedFamily
+                and form.SelectedType
+            ):
                 selected.SubItems[1].Text = self.GetElementName(form.SelectedFamily)
                 selected.SubItems[2].Text = self.GetElementName(form.SelectedType)
                 self.settings.category_tag_families[category] = form.SelectedFamily
@@ -669,11 +974,18 @@ class MainForm(Form):
             return []
 
         collector = FilteredElementCollector(self.doc)
-        tag_families = collector.OfClass(Family).WhereElementIsNotElementType().ToElements()
+        tag_families = (
+            collector.OfClass(Family).WhereElementIsNotElementType().ToElements()
+        )
 
         available_families = []
         for family in tag_families:
-            if family and hasattr(family, 'FamilyCategory') and family.FamilyCategory and family.FamilyCategory.Id == tag_category_id:
+            if (
+                family
+                and hasattr(family, "FamilyCategory")
+                and family.FamilyCategory
+                and family.FamilyCategory.Id == tag_category_id
+            ):
                 available_families.append(family)
 
         return available_families
@@ -681,19 +993,34 @@ class MainForm(Form):
     def GenerateSummary(self):
         summary = "СВОДКА ПЕРЕД ВЫПОЛНЕНИЕМ:\r\n\r\n"
         summary += "Выбрано видов: " + str(len(self.settings.selected_views)) + "\r\n"
-        summary += "Выбрано категорий: " + str(len(self.settings.selected_categories)) + "\r\n"
+        summary += (
+            "Выбрано категорий: " + str(len(self.settings.selected_categories)) + "\r\n"
+        )
 
-        orientation_text = "Горизонтальная" if self.settings.orientation == TagOrientation.Horizontal else "Вертикальная"
+        orientation_text = (
+            "Горизонтальная"
+            if self.settings.orientation == TagOrientation.Horizontal
+            else "Вертикальная"
+        )
         summary += "Ориентация: " + orientation_text + "\r\n"
         summary += "Выноска: " + ("Да" if self.settings.use_leader else "Нет") + "\r\n"
-        summary += "Логирование: " + ("Включено" if self.settings.enable_logging else "Отключено") + "\r\n\r\n"
+        summary += (
+            "Логирование: "
+            + ("Включено" if self.settings.enable_logging else "Отключено")
+            + "\r\n\r\n"
+        )
 
         summary += "Детали по категориям:\r\n"
         for category in self.settings.selected_categories:
             tag_family = self.settings.category_tag_families.get(category)
             tag_type = self.settings.category_tag_types.get(category)
             if tag_family and tag_type:
-                status = self.GetElementName(tag_family) + " (" + self.GetElementName(tag_type) + ")"
+                status = (
+                    self.GetElementName(tag_family)
+                    + " ("
+                    + self.GetElementName(tag_type)
+                    + ")"
+                )
             else:
                 status = "НЕТ МАРКИ"
             summary += "- " + self.GetCategoryName(category) + ": " + status + "\r\n"
@@ -706,13 +1033,23 @@ class MainForm(Form):
         success_count = 0
         errors = []
         total_operations = sum(
-            len(FilteredElementCollector(self.doc, view.Id).OfCategoryId(category.Id).WhereElementIsNotElementType().ToElements())
-            for view in self.settings.selected_views for category in self.settings.selected_categories
+            len(
+                FilteredElementCollector(self.doc, view.Id)
+                .OfCategoryId(category.Id)
+                .WhereElementIsNotElementType()
+                .ToElements()
+            )
+            for view in self.settings.selected_views
+            for category in self.settings.selected_categories
         )
         self.progressBar.Maximum = total_operations or 1
         self.progressBar.Value = 0
 
-        self.logger.add("Начало выполнения расстановки марок. Всего операций: {0}".format(total_operations))
+        self.logger.add(
+            "Начало выполнения расстановки марок. Всего операций: {0}".format(
+                total_operations
+            )
+        )
 
         trans = Transaction(self.doc, "Расстановка марок")
         trans.Start()
@@ -729,10 +1066,17 @@ class MainForm(Form):
                 elements_by_view_and_category[view.Id] = {}
                 for category in self.settings.selected_categories:
                     elements = list(
-                        FilteredElementCollector(self.doc, view.Id).OfCategoryId(category.Id).WhereElementIsNotElementType().ToElements()
+                        FilteredElementCollector(self.doc, view.Id)
+                        .OfCategoryId(category.Id)
+                        .WhereElementIsNotElementType()
+                        .ToElements()
                     )
                     elements_by_view_and_category[view.Id][category.Id] = elements
-                    self.logger.add("Категория '{0}': найдено элементов {1}".format(self.GetCategoryName(category), len(elements)))
+                    self.logger.add(
+                        "Категория '{0}': найдено элементов {1}".format(
+                            self.GetCategoryName(category), len(elements)
+                        )
+                    )
 
             for view in self.settings.selected_views:
                 if not isinstance(view, View3D):
@@ -741,22 +1085,46 @@ class MainForm(Form):
                     elements = elements_by_view_and_category[view.Id][category.Id]
                     tag_type = self.settings.category_tag_types.get(category)
 
+                    # Применяем новую логику только для воздуховодов
+                    if category.Id.IntegerValue == int(BuiltInCategory.OST_DuctCurves):
+                        # Отбираем воздуховоды для маркировки
+                        elements = self.GetDuctsToTag(elements)
+                        self.logger.add(
+                            "Для категории '{0}' отобрано {1} воздуховодов для маркировки".format(
+                                self.GetCategoryName(category), len(elements)
+                            )
+                        )
+
                     if not tag_type:
-                        error_msg = "Нет марки для категории '{0}'".format(self.GetCategoryName(category))
+                        error_msg = "Нет марки для категории '{0}'".format(
+                            self.GetCategoryName(category)
+                        )
                         errors.append(error_msg)
                         self.logger.add(error_msg)
                         continue
 
                     for element in elements:
-                        self.progressBar.Value = min(self.progressBar.Value + 1, self.progressBar.Maximum)
+                        self.progressBar.Value = min(
+                            self.progressBar.Value + 1, self.progressBar.Maximum
+                        )
                         if self.HasExistingTag(element, view):
-                            self.logger.add("Элемент {0} уже имеет марку на виде {1}, пропущен".format(element.Id, view.Name))
+                            self.logger.add(
+                                "Элемент {0} уже имеет марку на виде {1}, пропущен".format(
+                                    element.Id, view.Name
+                                )
+                            )
                             continue
                         if self.CreateTag(element, view, tag_type):
                             success_count += 1
-                            self.logger.add("Марка создана для элемента {0} на виде {1}".format(element.Id, view.Name))
+                            self.logger.add(
+                                "Марка создана для элемента {0} на виде {1}".format(
+                                    element.Id, view.Name
+                                )
+                            )
                         else:
-                            error_msg = "Не удалось создать марку для элемента {0} на виде {1}".format(element.Id, view.Name)
+                            error_msg = "Не удалось создать марку для элемента {0} на виде {1}".format(
+                                element.Id, view.Name
+                            )
                             errors.append(error_msg)
                             self.logger.add(error_msg)
 
@@ -776,9 +1144,11 @@ class MainForm(Form):
 
         result_msg = "Успешно расставлено марок: {0}".format(success_count)
         if errors:
-            result_msg += "\n\nОшибки ({0}):\n".format(len(errors)) + "\n".join(errors[:10])
+            result_msg += "\n\nОшибки ({0}):\n".format(len(errors)) + "\n".join(
+                errors[:10]
+            )
             if len(errors) > 10:
-                result_msg += "\n... и еще {0} ошибок".format(len(errors)-10)
+                result_msg += "\n... и еще {0} ошибок".format(len(errors) - 10)
 
         MessageBox.Show(result_msg, "Результат")
         if self.settings.enable_logging:
@@ -811,10 +1181,21 @@ class MainForm(Form):
             direction_x = 1 if element.Id.IntegerValue % 2 == 0 else -1
             direction_y = 1 if element.Id.IntegerValue % 3 == 0 else -1
 
-            tag_point = XYZ(center.X + offset_x * direction_x, center.Y + offset_y * direction_y, center.Z)
+            tag_point = XYZ(
+                center.X + offset_x * direction_x,
+                center.Y + offset_y * direction_y,
+                center.Z,
+            )
 
-            tag = IndependentTag.Create(self.doc, view.Id, Reference(element), self.settings.use_leader,
-                                      TagMode.TM_ADDBY_CATEGORY, self.settings.orientation, tag_point)
+            tag = IndependentTag.Create(
+                self.doc,
+                view.Id,
+                Reference(element),
+                self.settings.use_leader,
+                TagMode.TM_ADDBY_CATEGORY,
+                self.settings.orientation,
+                tag_point,
+            )
 
             if tag and tag_type:
                 try:
@@ -840,14 +1221,21 @@ class MainForm(Form):
             bool: True, если марка существует.
         """
         try:
-            for tag in FilteredElementCollector(self.doc, view.Id).OfClass(IndependentTag).ToElements():
+            for tag in (
+                FilteredElementCollector(self.doc, view.Id)
+                .OfClass(IndependentTag)
+                .ToElements()
+            ):
                 try:
                     for tagged_elem in tag.GetTaggedLocalElements():
                         if tagged_elem.Id == element.Id:
                             return True
                 except Exception as e:
                     self.logger.add("Ошибка проверки марки {0}: {1}".format(tag.Id, e))
-                    if hasattr(tag, 'TaggedLocalElementId') and tag.TaggedLocalElementId == element.Id:
+                    if (
+                        hasattr(tag, "TaggedLocalElementId")
+                        and tag.TaggedLocalElementId == element.Id
+                    ):
                         return True
             return False
         except Exception as e:
@@ -870,7 +1258,7 @@ class MainForm(Form):
         config_path = self.GetConfigPath()
         if os.path.exists(config_path):
             try:
-                with open(config_path, 'r') as f:
+                with open(config_path, "r") as f:
                     return json.load(f)
             except Exception as e:
                 self.logger.add("Ошибка загрузки настроек марок: {0}".format(e))
@@ -891,7 +1279,7 @@ class MainForm(Form):
 
         config_path = self.GetConfigPath()
         try:
-            with open(config_path, 'w') as f:
+            with open(config_path, "w") as f:
                 json.dump(defaults, f, ensure_ascii=True, indent=4)
         except Exception as e:
             self.logger.add("Ошибка сохранения настроек марок: {0}".format(e))
@@ -925,7 +1313,8 @@ class MainForm(Form):
             str: Путь к tag_defaults.json.
         """
         script_dir = os.path.dirname(__file__)
-        return os.path.join(script_dir, 'tag_defaults.json')
+        return os.path.join(script_dir, "tag_defaults.json")
+
 
 # Форма выбора семейства марки
 class TagFamilySelectionForm(Form):
@@ -938,6 +1327,7 @@ class TagFamilySelectionForm(Form):
         selected_family: Выбранное семейство.
         selected_type: Выбранный типоразмер.
     """
+
     def __init__(self, doc, available_families, current_family, current_type):
         self.doc = doc
         self.available_families = available_families
@@ -962,15 +1352,28 @@ class TagFamilySelectionForm(Form):
         self.MinimizeBox = False
 
         controls = [
-            Label(Text="Выберите семейство марки:", Location=Point(10, 10), Size=Size(250, 20)),
+            Label(
+                Text="Выберите семейство марки:",
+                Location=Point(10, 10),
+                Size=Size(250, 20),
+            ),
             ListBox(Location=Point(10, 40), Size=Size(250, 350)),
-            Label(Text="Выберите типоразмер:", Location=Point(270, 10), Size=Size(250, 20)),
+            Label(
+                Text="Выберите типоразмер:", Location=Point(270, 10), Size=Size(250, 20)
+            ),
             ListBox(Location=Point(270, 40), Size=Size(500, 350)),
             Button(Text="OK", Location=Point(400, 400), Size=Size(75, 25)),
-            Button(Text="Отмена", Location=Point(485, 400), Size=Size(75, 25))
+            Button(Text="Отмена", Location=Point(485, 400), Size=Size(75, 25)),
         ]
 
-        self.lblFamilies, self.lstFamilies, self.lblTypes, self.lstTypes, self.btnOK, self.btnCancel = controls
+        (
+            self.lblFamilies,
+            self.lstFamilies,
+            self.lblTypes,
+            self.lstTypes,
+            self.btnOK,
+            self.btnCancel,
+        ) = controls
 
         self.lstFamilies.SelectedIndexChanged += self.OnFamilySelected
         self.lstFamilies.DoubleClick += self.OnFamilyDoubleClick
@@ -1013,13 +1416,17 @@ class TagFamilySelectionForm(Form):
         try:
             # Для FamilySymbol (типоразмеров)
             if isinstance(element, FamilySymbol):
-                if hasattr(element, 'Name') and element.Name:
+                if hasattr(element, "Name") and element.Name:
                     name = element.Name
-                    if name and not name.startswith('IronPython'):
+                    if name and not name.startswith("IronPython"):
                         return name
 
-                if hasattr(element, 'Family') and element.Family:
-                    family_name = element.Family.Name if hasattr(element.Family, 'Name') and element.Family.Name else ""
+                if hasattr(element, "Family") and element.Family:
+                    family_name = (
+                        element.Family.Name
+                        if hasattr(element.Family, "Name") and element.Family.Name
+                        else ""
+                    )
 
                     # Пробуем получить имя типа через параметры
                     type_name = ""
@@ -1040,20 +1447,22 @@ class TagFamilySelectionForm(Form):
 
             # Для Family (семейств)
             elif isinstance(element, Family):
-                if hasattr(element, 'Name') and element.Name:
+                if hasattr(element, "Name") and element.Name:
                     name = element.Name
-                    if name and not name.startswith('IronPython'):
+                    if name and not name.startswith("IronPython"):
                         return name
                 return "Семейство " + str(element.Id.IntegerValue)
 
             # Общий случай
-            if hasattr(element, 'Name') and element.Name:
+            if hasattr(element, "Name") and element.Name:
                 name = element.Name
-                if name and not name.startswith('IronPython'):
+                if name and not name.startswith("IronPython"):
                     return name
 
         except Exception as e:
-            self.logger.add("GetElementName: Ошибка при получении имени элемента: {0}".format(e))
+            self.logger.add(
+                "GetElementName: Ошибка при получении имени элемента: {0}".format(e)
+            )
 
         return "Элемент " + str(element.Id.IntegerValue)
 
@@ -1072,13 +1481,17 @@ class TagFamilySelectionForm(Form):
         try:
             # Для FamilySymbol (типоразмеров)
             if isinstance(element, FamilySymbol):
-                if hasattr(element, 'Name') and element.Name:
+                if hasattr(element, "Name") and element.Name:
                     name = element.Name
-                    if name and not name.startswith('IronPython'):
+                    if name and not name.startswith("IronPython"):
                         return name
 
-                if hasattr(element, 'Family') and element.Family:
-                    family_name = element.Family.Name if hasattr(element.Family, 'Name') and element.Family.Name else ""
+                if hasattr(element, "Family") and element.Family:
+                    family_name = (
+                        element.Family.Name
+                        if hasattr(element.Family, "Name") and element.Family.Name
+                        else ""
+                    )
 
                     # Пробуем получить имя типа через параметры
                     type_name = ""
@@ -1099,16 +1512,16 @@ class TagFamilySelectionForm(Form):
 
             # Для Family (семейств)
             elif isinstance(element, Family):
-                if hasattr(element, 'Name') and element.Name:
+                if hasattr(element, "Name") and element.Name:
                     name = element.Name
-                    if name and not name.startswith('IronPython'):
+                    if name and not name.startswith("IronPython"):
                         return name
                 return "Семейство " + str(element.Id.IntegerValue)
 
             # Общий случай
-            if hasattr(element, 'Name') and element.Name:
+            if hasattr(element, "Name") and element.Name:
                 name = element.Name
-                if name and not name.startswith('IronPython'):
+                if name and not name.startswith("IronPython"):
                     return name
 
         except Exception as e:
@@ -1144,7 +1557,13 @@ class TagFamilySelectionForm(Form):
                     if symbol:
                         symbol_name = self.GetElementNameImproved(symbol)
                         status = " (активный)" if symbol.IsActive else " (не активный)"
-                        display_name = symbol_name + status + " [ID:" + str(symbol.Id.IntegerValue) + "]"
+                        display_name = (
+                            symbol_name
+                            + status
+                            + " [ID:"
+                            + str(symbol.Id.IntegerValue)
+                            + "]"
+                        )
 
                         self.lstTypes.Items.Add(display_name)
                         self.type_dict[display_name] = symbol
@@ -1218,6 +1637,7 @@ class TagFamilySelectionForm(Form):
     def SelectedType(self):
         return self.selected_type
 
+
 # Запуск
 def main():
     """
@@ -1232,6 +1652,7 @@ def main():
             MessageBox.Show("Нет доступа к документу Revit")
     except Exception as e:
         MessageBox.Show("Ошибка: " + str(e))
+
 
 if __name__ == "__main__":
     main()
