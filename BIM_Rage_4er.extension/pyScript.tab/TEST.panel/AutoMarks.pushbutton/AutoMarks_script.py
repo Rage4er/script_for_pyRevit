@@ -1032,29 +1032,13 @@ class MainForm(Form):
         """
         success_count = 0
         errors = []
-        total_operations = sum(
-            len(
-                FilteredElementCollector(self.doc, view.Id)
-                .OfCategoryId(category.Id)
-                .WhereElementIsNotElementType()
-                .ToElements()
-            )
-            for view in self.settings.selected_views
-            for category in self.settings.selected_categories
-        )
-        self.progressBar.Maximum = total_operations or 1
-        self.progressBar.Value = 0
-
-        self.logger.add(
-            "Начало выполнения расстановки марок. Всего операций: {0}".format(
-                total_operations
-            )
-        )
-
+        
+        self.logger.add("Начало выполнения расстановки марок.")
+        
         trans = Transaction(self.doc, "Расстановка марок")
         trans.Start()
         try:
-            # Кэширование элементов
+            # 1. Собираем элементы по видам и категориям
             elements_by_view_and_category = {}
             for view in self.settings.selected_views:
                 if not isinstance(view, View3D):
@@ -1062,8 +1046,10 @@ class MainForm(Form):
                     errors.append(error_msg)
                     self.logger.add(error_msg)
                     continue
+                    
                 self.logger.add("Обработка вида: {0}".format(view.Name))
                 elements_by_view_and_category[view.Id] = {}
+                
                 for category in self.settings.selected_categories:
                     elements = list(
                         FilteredElementCollector(self.doc, view.Id)
@@ -1078,12 +1064,16 @@ class MainForm(Form):
                         )
                     )
 
+            # 2. Применяем фильтрацию для воздуховодов (если нужно)
+            # Сначала собираем все элементы для прогресса
+            all_elements_for_progress = []
+            
             for view in self.settings.selected_views:
                 if not isinstance(view, View3D):
                     continue
+                    
                 for category in self.settings.selected_categories:
                     elements = elements_by_view_and_category[view.Id][category.Id]
-                    tag_type = self.settings.category_tag_types.get(category)
 
                     # Применяем новую логику только для воздуховодов
                     if category.Id.IntegerValue == int(BuiltInCategory.OST_DuctCurves):
@@ -1094,6 +1084,33 @@ class MainForm(Form):
                                 self.GetCategoryName(category), len(elements)
                             )
                         )
+                    
+                    # Обновляем элементы в кэше
+                    elements_by_view_and_category[view.Id][category.Id] = elements
+                    # Добавляем в общий список для прогресса
+                    all_elements_for_progress.extend(elements)
+
+            # 3. Настраиваем прогресс-бар на РЕАЛЬНОЕ количество операций
+            total_operations = len(all_elements_for_progress)
+            self.logger.add("Всего операций после фильтрации: {0}".format(total_operations))
+            
+            if total_operations == 0:
+                self.progressBar.Maximum = 1
+            else:
+                self.progressBar.Maximum = total_operations
+                
+            self.progressBar.Value = 0
+            
+            # 4. Основной цикл расстановки марок
+            processed_count = 0
+            
+            for view in self.settings.selected_views:
+                if not isinstance(view, View3D):
+                    continue
+                    
+                for category in self.settings.selected_categories:
+                    elements = elements_by_view_and_category[view.Id][category.Id]
+                    tag_type = self.settings.category_tag_types.get(category)
 
                     if not tag_type:
                         error_msg = "Нет марки для категории '{0}'".format(
@@ -1104,9 +1121,15 @@ class MainForm(Form):
                         continue
 
                     for element in elements:
+                        # Обновляем прогресс перед каждой операцией
+                        processed_count += 1
                         self.progressBar.Value = min(
-                            self.progressBar.Value + 1, self.progressBar.Maximum
+                            processed_count, self.progressBar.Maximum
                         )
+                        
+                        # Обновляем UI для плавного отображения прогресса
+                        Application.DoEvents()
+                        
                         if self.HasExistingTag(element, view):
                             self.logger.add(
                                 "Элемент {0} уже имеет марку на виде {1}, пропущен".format(
@@ -1114,6 +1137,7 @@ class MainForm(Form):
                                 )
                             )
                             continue
+                            
                         if self.CreateTag(element, view, tag_type):
                             success_count += 1
                             self.logger.add(
@@ -1130,6 +1154,7 @@ class MainForm(Form):
 
             trans.Commit()
             self.logger.add("Транзакция подтверждена успешно")
+            
         except Exception as e:
             trans.RollBack()
             error_msg = "Критическая ошибка: {0}".format(e)
@@ -1138,7 +1163,10 @@ class MainForm(Form):
         finally:
             trans.Dispose()
             self.logger.add("Транзакция завершена")
-
+        
+        # 5. Гарантируем, что прогресс-бар показывает 100% в конце
+        self.progressBar.Value = self.progressBar.Maximum
+        
         # Сохранить выбранные марки
         self.SaveTagDefaults()
 
