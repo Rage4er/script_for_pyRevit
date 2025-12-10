@@ -6,7 +6,7 @@ __doc__ = (
     """Автоматическа корректировка длины полки марок 
     на виде в зависимости от содержимого"""
 )
-__ver__ = "1.0"
+__ver__ = "1.1"
 
 import clr
 
@@ -18,11 +18,24 @@ clr.AddReference("System.Drawing")
 import json
 import math
 import os
+import sys
+import traceback
 
 from Autodesk.Revit.DB import *
 from System import Array, Environment
 from System.Drawing import *
 from System.Windows.Forms import *
+
+# Логирование для pyRevit
+try:
+    from pyrevit import script
+    from pyrevit import forms
+    from pyrevit import output
+    logger = script.get_logger()
+    output = script.get_output()
+    PYREVIT_AVAILABLE = True
+except:
+    PYREVIT_AVAILABLE = False
 
 MM_TO_FEET = 304.8
 
@@ -52,6 +65,10 @@ class MainForm(Form):
 
         self.InitializeComponent()
         self.Load3DViews()
+        
+        # Инициализируем логирование
+        if PYREVIT_AVAILABLE:
+            logger.info("Инициализация формы MainForm")
 
     def InitializeComponent(self):
         self.Text = "Объединенный анализ и корректировка марок"
@@ -75,6 +92,9 @@ class MainForm(Form):
             self.tabControl.TabPages.Add(tab)
 
         self.Controls.Add(self.tabControl)
+        
+        if PYREVIT_AVAILABLE:
+            logger.debug("Форма MainForm инициализирована")
 
     def CreateControl(self, control_type, **kwargs):
         control = control_type()
@@ -123,6 +143,9 @@ class MainForm(Form):
         for c in controls:
             tab.Controls.Add(c)
         self.txtSearchViews.TextChanged += self.OnSearchViewsTextChanged
+        
+        if PYREVIT_AVAILABLE:
+            logger.debug("Вкладка 1 (Виды) настроена")
 
     def SetupTab2(self, tab):  # Категории и Параметры
         self.lstParameterSelection = ListView()
@@ -159,6 +182,9 @@ class MainForm(Form):
         self.CollectCategories()
         self.CollectParameters()
         self.PopulateParameterSelection()
+        
+        if PYREVIT_AVAILABLE:
+            logger.debug("Вкладка 2 (Категории и Параметры) настроена")
 
     def SetupTab3(self, tab):
         """Настраивает вкладку 3: результаты обработки."""
@@ -210,25 +236,37 @@ class MainForm(Form):
         self.btnExecute.Click += self.OnExecuteClick
         for c in controls:
             tab.Controls.Add(c)
+        
+        if PYREVIT_AVAILABLE:
+            logger.debug("Вкладка 3 (Результаты) настроена")
 
     def Load3DViews(self):
-        views = (
-            FilteredElementCollector(self.doc)
-            .OfClass(View3D)
-            .WhereElementIsNotElementType()
-            .ToElements()
-        )
-        self.lstViews.Items.Clear()
-        self.all_views_dict.clear()
-        for view in views:
-            if (
-                view.CanBePrinted
-                and not view.IsTemplate
-                and not view.Name.startswith("{")
-            ):
-                self.lstViews.Items.Add(view.Name, False)
-                self.all_views_dict[view.Name] = view
-        self.UpdateViewsList("")
+        try:
+            views = (
+                FilteredElementCollector(self.doc)
+                .OfClass(View3D)
+                .WhereElementIsNotElementType()
+                .ToElements()
+            )
+            self.lstViews.Items.Clear()
+            self.all_views_dict.clear()
+            for view in views:
+                if (
+                    view.CanBePrinted
+                    and not view.IsTemplate
+                    and not view.Name.startswith("{")
+                ):
+                    self.lstViews.Items.Add(view.Name, False)
+                    self.all_views_dict[view.Name] = view
+            self.UpdateViewsList("")
+            
+            if PYREVIT_AVAILABLE:
+                logger.info("Загружено {} 3D видов".format(len(self.all_views_dict)))
+        except Exception as e:
+            if PYREVIT_AVAILABLE:
+                logger.error("Ошибка при загрузке 3D видов: {}".format(str(e)))
+            else:
+                print("Ошибка при загрузке 3D видов: {}".format(str(e)))
 
     def UpdateViewsList(self, filter_text):
         self.lstViews.Items.Clear()
@@ -259,6 +297,9 @@ class MainForm(Form):
         self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 1
         self.tabControl.Selecting += self.OnTabSelecting
+        
+        if PYREVIT_AVAILABLE:
+            logger.info("Выбрано {} видов для обработки".format(len(self.settings.selected_views)))
 
     def OnBack1Click(self, sender, args):
         self.tabControl.Selecting -= self.OnTabSelecting
@@ -283,26 +324,36 @@ class MainForm(Form):
         self.tabControl.Selecting += self.OnTabSelecting
 
     def CollectCategories(self):
-        categories = [
-            BuiltInCategory.OST_DuctCurves,
-            BuiltInCategory.OST_FlexDuctCurves,
-            BuiltInCategory.OST_DuctInsulations,
-            BuiltInCategory.OST_DuctTerminal,
-            BuiltInCategory.OST_DuctAccessory,
-            BuiltInCategory.OST_MechanicalEquipment,
-        ]
+        try:
+            categories = [
+                BuiltInCategory.OST_DuctCurves,
+                BuiltInCategory.OST_FlexDuctCurves,
+                BuiltInCategory.OST_DuctInsulations,
+                BuiltInCategory.OST_DuctTerminal,
+                BuiltInCategory.OST_DuctAccessory,
+                BuiltInCategory.OST_MechanicalEquipment,
+            ]
 
-        unique_cats = set()
-        for cat in categories:
-            try:
-                cat_obj = Category.GetCategory(self.doc, cat)
-                if cat_obj:
-                    unique_cats.add(cat_obj)
-            except:
-                pass
+            unique_cats = set()
+            for cat in categories:
+                try:
+                    cat_obj = Category.GetCategory(self.doc, cat)
+                    if cat_obj:
+                        unique_cats.add(cat_obj)
+                except Exception as e:
+                    if PYREVIT_AVAILABLE:
+                        logger.warning("Не удалось получить категорию {}: {}".format(cat, str(e)))
 
-        self.settings.selected_categories = list(unique_cats)
-        self.CollectParameters()
+            self.settings.selected_categories = list(unique_cats)
+            self.CollectParameters()
+            
+            if PYREVIT_AVAILABLE:
+                logger.info("Собрано {} категорий".format(len(self.settings.selected_categories)))
+        except Exception as e:
+            if PYREVIT_AVAILABLE:
+                logger.error("Ошибка при сборе категорий: {}".format(str(e)))
+            else:
+                print("Ошибка при сборе категорий: {}".format(str(e)))
 
     def CollectParameters(self):
         self.settings.parameters_by_category = {}
@@ -318,6 +369,8 @@ class MainForm(Form):
 
                 elements = collector.ToElements()
                 if not elements:
+                    if PYREVIT_AVAILABLE:
+                        logger.debug("Нет элементов в категории {}".format(self.GetCategoryName(category)))
                     continue
 
                 # Собрать параметры из первых 5 элементов
@@ -363,9 +416,15 @@ class MainForm(Form):
                     self.settings.selected_parameters[category.Id.IntegerValue] = (
                         sorted_params[0] if sorted_params else None
                     )
+                    
+                if PYREVIT_AVAILABLE:
+                    logger.debug("Категория {}: найдено {} параметров".format(self.GetCategoryName(category), len(sorted_params)))
 
             except Exception as e:
-                pass
+                if PYREVIT_AVAILABLE:
+                    logger.error("Ошибка при сборе параметров для категории {}: {}".format(self.GetCategoryName(category), str(e)))
+                else:
+                    print("Ошибка при сборе параметров для категории {}: {}".format(self.GetCategoryName(category), str(e)))
 
     def PopulateParameterSelection(self):
         self.lstParameterSelection.Items.Clear()
@@ -408,8 +467,13 @@ class MainForm(Form):
                     self.tag_defaults[cat_name] = {}
                 self.tag_defaults[cat_name]["param"] = form.SelectedParameter
                 self.SaveTagDefaults()
-        except Exception, e:
-            MessageBox.Show("Ошибка в диалоге выбора параметров: {}".format(str(e)))
+                if PYREVIT_AVAILABLE:
+                    logger.info("Выбран параметр '{}' для категории '{}'".format(form.SelectedParameter, cat_name))
+        except Exception as e:
+            error_msg = "Ошибка в диалоге выбора параметров: {}".format(str(e))
+            if PYREVIT_AVAILABLE:
+                logger.error(error_msg)
+            MessageBox.Show(error_msg)
 
     def OnBack2Click(self, sender, args):
         self.tabControl.Selecting -= self.OnTabSelecting
@@ -422,6 +486,8 @@ class MainForm(Form):
         self.tabControl.Selecting += self.OnTabSelecting
 
     def OnFinishClick(self, sender, args):
+        if PYREVIT_AVAILABLE:
+            logger.info("Завершение работы скрипта")
         self.Close()
 
     def LoadTagDefaults(self):
@@ -432,17 +498,26 @@ class MainForm(Form):
             try:
                 with open(defaults_path, "r") as f:
                     self.tag_defaults = json.load(f)
-            except Exception, e:
-                pass
+                if PYREVIT_AVAILABLE:
+                    logger.info("Загружены настройки из {}".format(defaults_path))
+            except Exception as e:
+                if PYREVIT_AVAILABLE:
+                    logger.warning("Не удалось загрузить настройки: {}".format(str(e)))
+        else:
+            if PYREVIT_AVAILABLE:
+                logger.info("Файл настроек не найден, будут использованы значения по умолчанию")
 
     def SaveTagDefaults(self):
         script_dir = os.path.dirname(__file__)
         defaults_path = os.path.join(script_dir, "tag_defaults.json")
         try:
             with open(defaults_path, "w") as f:
-                json.dump(self.tag_defaults, f, indent=4)
-        except Exception, e:
-            pass
+                json.dump(self.tag_defaults, f, indent=4, ensure_ascii=False)
+            if PYREVIT_AVAILABLE:
+                logger.debug("Настройки сохранены в {}".format(defaults_path))
+        except Exception as e:
+            if PYREVIT_AVAILABLE:
+                logger.error("Ошибка при сохранении настроек: {}".format(str(e)))
 
     def generate_new_name_and_num(self, tag_type, required_length):
         name_param = tag_type.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
@@ -511,19 +586,16 @@ class MainForm(Form):
 
     # Анализ и корректировка
     def OnExecuteClick(self, sender, args):
-        # Перенаправляем вывод в null для предотвращения отображения консоли
-        import os
-        import sys
-
-        sys.stdout = open(os.devnull, "w")
-        sys.stderr = open(os.devnull, "w")
-        # Скрываем консоль pyRevit для предотвращения открытия при выполнении
-        try:
-            import pyrevit
-
-            pyrevit.console.Hide()
-        except:
-            pass
+        # Убираем подавление вывода и включаем полное логирование
+        if PYREVIT_AVAILABLE:
+            logger.info("=" * 80)
+            logger.info("НАЧАЛО ВЫПОЛНЕНИЯ КОРРЕКТИРОВКИ МАРОК")
+            logger.info("=" * 80)
+        else:
+            print("=" * 80)
+            print("НАЧАЛО ВЫПОЛНЕНИЯ КОРРЕКТИРОВКИ МАРОК")
+            print("=" * 80)
+            
         tag_categories = [
             BuiltInCategory.OST_DuctTags,
             BuiltInCategory.OST_DuctTerminalTags,
@@ -545,190 +617,275 @@ class MainForm(Form):
         # Кэширование маркеров для производительности
         all_tags = []
         for view in self.settings.selected_views:
+            if PYREVIT_AVAILABLE:
+                logger.info("Сбор марок для вида: {}".format(view.Name))
             collector = FilteredElementCollector(self.doc, view.Id).OfClass(
                 IndependentTag
             )
-            all_tags.extend(collector.ToElements())
+            tags_in_view = collector.ToElements()
+            all_tags.extend(tags_in_view)
+            if PYREVIT_AVAILABLE:
+                logger.debug("Вид {}: найдено {} марок".format(view.Name, len(tags_in_view)))
 
         # Инициализация прогресса
         self.progressBar.Value = 0
         processed_tags = 0
         total_tags_estimated = len(all_tags) or 1
+        
+        if PYREVIT_AVAILABLE:
+            logger.info("Всего марок для обработки: {}".format(len(all_tags)))
 
         trans = Transaction(self.doc, "Корректировка типоразмеров марок")
         try:
             trans.Start()
+            
             for tag in all_tags:
-                total_tags_all += 1
-                print("Обработка марки ID {}".format(tag.Id))
+                try:
+                    total_tags_all += 1
+                    
+                    # Обновление прогресса
+                    processed_tags += 1
+                    progress = int(processed_tags * 100 / total_tags_estimated)
+                    if progress > 100:
+                        progress = 100
+                    self.progressBar.Value = progress
+                    
+                    # Периодическое логирование прогресса
+                    if processed_tags % 50 == 0 and PYREVIT_AVAILABLE:
+                        logger.debug("Обработано {}/{} марок ({}%)".format(processed_tags, len(all_tags), progress))
 
-                # Обновление прогресса
-                processed_tags += 1
-                progress = int(processed_tags * 100 / total_tags_estimated)
-                if progress > 100:
-                    progress = 100
-                self.progressBar.Value = progress
-
-                if tag.Category:
-                    actual_category_ids.add(tag.Category.Id.IntegerValue)
-                else:
-                    continue
-                if tag.Category and tag.Category.Id.IntegerValue in [
-                    c.value__ for c in tag_categories
-                ]:
-                    tags_with_category += 1
-                    tagged_elements = tag.GetTaggedLocalElements()
-                    if tagged_elements:
-                        tags_with_elements += 1
-                        element = tagged_elements[0]
-                        category = element.Category
-                        param_name = self.settings.selected_parameters.get(
-                            category.Id.IntegerValue
-                        )
-                        if param_name:
-                            tags_with_param += 1
-                            # Проверка instance или type параметра
-                            param = element.LookupParameter(param_name)
-                            if not param:
-                                # Проверить type parameter
-                                type_elem = self.doc.GetElement(element.GetTypeId())
-                                if type_elem:
-                                    param = type_elem.LookupParameter(param_name)
-                            if param:
-                                if param and param.HasValue:
-                                    tags_with_value += 1
-                                    value = param.AsValueString()
-                                    if value is None:
-                                        value = ""
-                                    char_count = len(value)
-                                    required_length = math.ceil(char_count * 1.6 + 1)
-
-                                    # Получить базовый символ марки
-                                    base_symbol = self.doc.GetElement(tag.GetTypeId())
-                                    if not isinstance(base_symbol, FamilySymbol):
-                                        continue
-                                    try:
-                                        if not base_symbol.Family:
-                                            continue
-                                    except Exception as fam_e:
-                                        continue
-
-                                    family_id = base_symbol.Family.Id.IntegerValue
-
-                                    # Инициализировать словарь для семейства
-                                    if family_id not in created_symbols:
-                                        created_symbols[family_id] = {}
-
-                                    # Создать новый символ, если нужен
-                                    if (
-                                        required_length
-                                        not in created_symbols[family_id]
-                                    ):
-                                        new_name, shelf_num, existing_id = (
-                                            self.generate_new_name_and_num(
-                                                base_symbol, required_length
-                                            )
-                                        )
-
-                                        if existing_id is not None:
-                                            # Использовать существующий символ
-                                            new_symbol = self.doc.GetElement(
-                                                existing_id
-                                            )
-                                            created_symbols[family_id][
-                                                required_length
-                                            ] = new_symbol
-                                        else:
-                                            # Создать новый символ
-                                            new_symbol = base_symbol.Duplicate(new_name)
-                                            # Установить "Длина полки"
-                                            shelf_param_names = [
-                                                "Длина полки",
-                                                "Shelf Length",
-                                                "Length",
-                                                "Длина",
-                                            ]
-                                            shelf_set = False
-                                            for param_name_shelf in shelf_param_names:
-                                                shelf_param = (
-                                                    new_symbol.LookupParameter(
-                                                        param_name_shelf
-                                                    )
-                                                )
-                                                if (
-                                                    shelf_param
-                                                    and not shelf_param.IsReadOnly
-                                                    and shelf_param.StorageType
-                                                    == StorageType.Double
-                                                ):
-                                                    shelf_param.Set(
-                                                        required_length / 304.8
-                                                    )
-                                                    shelf_set = True
-                                                    break
-                                            if not shelf_set:
-                                                pass
-                                            created_symbols[family_id][
-                                                required_length
-                                            ] = new_symbol
-
-                                    # Назначить новый символ марке
-                                    new_symbol = created_symbols[family_id][
-                                        required_length
-                                    ]
-                                    if tag.GetTypeId() != new_symbol.Id:
-                                        tag.ChangeTypeId(new_symbol.Id)
-                                        changed_tags += 1
-
-                                    results.append(
-                                        "Марка ID {}: присвоен тип '{}' с длиной полки {}мм".format(
-                                            tag.Id, new_name, required_length
-                                        )
-                                    )
-                                else:
-                                    pass
-                            else:
-                                pass
-                        else:
-                            pass
+                    if tag.Category:
+                        actual_category_ids.add(tag.Category.Id.IntegerValue)
                     else:
-                        pass
+                        if PYREVIT_AVAILABLE:
+                            logger.debug("Марка ID {}: нет категории, пропускаем".format(tag.Id))
+                        continue
+                        
+                    if tag.Category and tag.Category.Id.IntegerValue in [
+                        c.value__ for c in tag_categories
+                    ]:
+                        tags_with_category += 1
+                        tagged_elements = tag.GetTaggedLocalElements()
+                        if tagged_elements:
+                            tags_with_elements += 1
+                            element = tagged_elements[0]
+                            category = element.Category
+                            param_name = self.settings.selected_parameters.get(
+                                category.Id.IntegerValue
+                            )
+                            if param_name:
+                                tags_with_param += 1
+                                # Проверка instance или type параметра
+                                param = element.LookupParameter(param_name)
+                                if not param:
+                                    # Проверить type parameter
+                                    type_elem = self.doc.GetElement(element.GetTypeId())
+                                    if type_elem:
+                                        param = type_elem.LookupParameter(param_name)
+                                if param:
+                                    if param and param.HasValue:
+                                        tags_with_value += 1
+                                        value = param.AsValueString()
+                                        if value is None:
+                                            value = ""
+                                        char_count = len(value)
+                                        required_length = math.ceil(char_count * 1.6 + 1)
+                                        
+                                        if PYREVIT_AVAILABLE:
+                                            logger.debug("Марка ID {}: значение '{}', символов: {}, требуемая длина: {}мм".format(tag.Id, value, char_count, required_length))
+
+                                        # Получить базовый символ марки
+                                        base_symbol = self.doc.GetElement(tag.GetTypeId())
+                                        if not isinstance(base_symbol, FamilySymbol):
+                                            if PYREVIT_AVAILABLE:
+                                                logger.warning("Марка ID {}: не является семейством, пропускаем".format(tag.Id))
+                                            continue
+                                        try:
+                                            if not base_symbol.Family:
+                                                if PYREVIT_AVAILABLE:
+                                                    logger.warning("Марка ID {}: нет семейства, пропускаем".format(tag.Id))
+                                                continue
+                                        except Exception as fam_e:
+                                            if PYREVIT_AVAILABLE:
+                                                logger.warning("Марка ID {}: ошибка при получении семейства: {}".format(tag.Id, str(fam_e)))
+                                            continue
+
+                                        family_id = base_symbol.Family.Id.IntegerValue
+
+                                        # Инициализировать словарь для семейства
+                                        if family_id not in created_symbols:
+                                            created_symbols[family_id] = {}
+
+                                        # Создать новый символ, если нужен
+                                        if (
+                                            required_length
+                                            not in created_symbols[family_id]
+                                        ):
+                                            new_name, shelf_num, existing_id = (
+                                                self.generate_new_name_and_num(
+                                                    base_symbol, required_length
+                                                )
+                                            )
+
+                                            if existing_id is not None:
+                                                # Использовать существующий символ
+                                                new_symbol = self.doc.GetElement(
+                                                    existing_id
+                                                )
+                                                created_symbols[family_id][
+                                                    required_length
+                                                ] = new_symbol
+                                                if PYREVIT_AVAILABLE:
+                                                    logger.info("Создан новый символ: {} (длина {}мм) для семейства ID {}".format(new_name, required_length, family_id))
+                                            else:
+                                                # Создать новый символ
+                                                new_symbol = base_symbol.Duplicate(new_name)
+                                                # Установить "Длина полки"
+                                                shelf_param_names = [
+                                                    "Длина полки",
+                                                    "Shelf Length",
+                                                    "Length",
+                                                    "Длина",
+                                                ]
+                                                shelf_set = False
+                                                for param_name_shelf in shelf_param_names:
+                                                    shelf_param = (
+                                                        new_symbol.LookupParameter(
+                                                            param_name_shelf
+                                                        )
+                                                    )
+                                                    if (
+                                                        shelf_param
+                                                        and not shelf_param.IsReadOnly
+                                                        and shelf_param.StorageType
+                                                        == StorageType.Double
+                                                    ):
+                                                        shelf_param.Set(
+                                                            required_length / 304.8
+                                                        )
+                                                        shelf_set = True
+                                                        if PYREVIT_AVAILABLE:
+                                                            logger.debug("Установлена длина полки {}мм для символа {}".format(required_length, new_name))
+                                                        break
+                                                if not shelf_set:
+                                                    if PYREVIT_AVAILABLE:
+                                                        logger.warning("Не найдено параметра для установки длины полки в символе {}".format(new_name))
+                                                created_symbols[family_id][
+                                                    required_length
+                                                ] = new_symbol
+
+                                        # Назначить новый символ марке
+                                        new_symbol = created_symbols[family_id][
+                                            required_length
+                                        ]
+                                        if tag.GetTypeId() != new_symbol.Id:
+                                            tag.ChangeTypeId(new_symbol.Id)
+                                            changed_tags += 1
+                                            if PYREVIT_AVAILABLE:
+                                                logger.debug("Марка ID {}: изменен тип на {}".format(tag.Id, new_symbol.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM).AsString()))
+
+                                        results.append(
+                                            "Марка ID {}: присвоен тип '{}' с длиной полки {}мм".format(
+                                                tag.Id, new_name, required_length
+                                            )
+                                        )
+                                    else:
+                                        if PYREVIT_AVAILABLE:
+                                            logger.debug("Марка ID {}: параметр '{}' не имеет значения".format(tag.Id, param_name))
+                                else:
+                                    if PYREVIT_AVAILABLE:
+                                        logger.debug("Марка ID {}: параметр '{}' не найден".format(tag.Id, param_name))
+                            else:
+                                if PYREVIT_AVAILABLE:
+                                    logger.debug("Марка ID {}: нет выбранного параметра для категории {}".format(tag.Id, category.Name if category else 'Unknown'))
+                        else:
+                            if PYREVIT_AVAILABLE:
+                                logger.debug("Марка ID {}: нет привязанных элементов".format(tag.Id))
+                    else:
+                        if PYREVIT_AVAILABLE:
+                            logger.debug("Марка ID {}: категория {} не в списке целевых".format(tag.Id, tag.Category.Name if tag.Category else 'Unknown'))
+
+                except Exception as tag_error:
+                    error_msg = "Ошибка при обработке марки ID {}: {}".format(tag.Id, str(tag_error))
+                    if PYREVIT_AVAILABLE:
+                        logger.error(error_msg)
+                        logger.error(traceback.format_exc())
+                    else:
+                        print(error_msg)
+                    results.append(error_msg)
 
             trans.Commit()
+            if PYREVIT_AVAILABLE:
+                logger.info("Транзакция успешно завершена")
+                
         except Exception as e:
+            error_msg = "Критическая ошибка: {}".format(str(e))
+            if PYREVIT_AVAILABLE:
+                logger.error(error_msg)
+                logger.error(traceback.format_exc())
+            else:
+                print(error_msg)
+            results.append(error_msg)
             if trans.GetStatus() == TransactionStatus.Started:
                 trans.RollBack()
-            results.append("Ошибка: {}".format(str(e)))
+                if PYREVIT_AVAILABLE:
+                    logger.warning("Транзакция отменена")
         finally:
             trans.Dispose()
 
-        # Повторно скрываем консоль на случай, если она открылась
-        try:
-            import pyrevit
-
-            pyrevit.console.Hide()
-        except:
-            pass
-
-        # Восстанавливаем stdout и stderr
-        try:
-            sys.stdout.close()
-            sys.stderr.close()
-        except:
-            pass
-
+        # Формирование итогового отчета
         lines = [
-            "Полный лог обработки:",
+            "=" * 60,
+            "ИТОГОВЫЙ ОТЧЕТ ОБ ОБРАБОТКЕ",
+            "=" * 60,
             "Всего марок: {}".format(total_tags_all),
-            "С категорией: {}".format(tags_with_category),
+            "С целевой категорией: {}".format(tags_with_category),
             "С привязанными элементами: {}".format(tags_with_elements),
             "С выбранным параметром: {}".format(tags_with_param),
             "С заполненным значением: {}".format(tags_with_value),
-            "Изменено: {}".format(changed_tags),
+            "Изменено марок: {}".format(changed_tags),
+            "Создано символов: {}".format(sum(len(symbols) for symbols in created_symbols.values())),
+            "=" * 60,
+            "ДЕТАЛЬНЫЙ ЛОГ:"
         ]
+        
+        # Добавляем детальные результаты
+        for result in results[-20:]:  # Последние 20 записей
+            lines.append(result)
+            
         log_text = Environment.NewLine.join(lines)
 
         self.txtResults.Text = log_text
+        
+        # Выводим итоги в консоль pyRevit
+        if PYREVIT_AVAILABLE:
+            logger.info("=" * 60)
+            logger.info("ИТОГИ ОБРАБОТКИ")
+            logger.info("=" * 60)
+            logger.info("Всего марок: {}".format(total_tags_all))
+            logger.info("С целевой категорией: {}".format(tags_with_category))
+            logger.info("С привязанными элементами: {}".format(tags_with_elements))
+            logger.info("С выбранным параметром: {}".format(tags_with_param))
+            logger.info("С заполненным значением: {}".format(tags_with_value))
+            logger.info("Изменено марок: {}".format(changed_tags))
+            logger.info("Создано символов: {}".format(sum(len(symbols) for symbols in created_symbols.values())))
+            logger.info("=" * 60)
+            logger.info("ВЫПОЛНЕНИЕ ЗАВЕРШЕНО")
+            logger.info("=" * 60)
+        else:
+            print("=" * 60)
+            print("ИТОГИ ОБРАБОТКИ")
+            print("=" * 60)
+            print("Всего марок: {}".format(total_tags_all))
+            print("С целевой категорией: {}".format(tags_with_category))
+            print("С привязанными элементами: {}".format(tags_with_elements))
+            print("С выбранным параметром: {}".format(tags_with_param))
+            print("С заполненным значением: {}".format(tags_with_value))
+            print("Изменено марок: {}".format(changed_tags))
+            print("Создано символов: {}".format(sum(len(symbols) for symbols in created_symbols.values())))
+            print("=" * 60)
+            print("ВЫПОЛНЕНИЕ ЗАВЕРШЕНО")
+            print("=" * 60)
 
     def OnTabSelecting(self, sender, args):
         args.Cancel = True
@@ -822,85 +979,24 @@ class ParameterSelectionForm(Form):
         return self.selected_parameter
 
 
-class ParameterSelectionForm(Form):
-    def __init__(self, doc, category, available_params, current_param):
-        self.doc = doc
-        self.category = category
-        self.available_params = available_params
-        self.selected_parameter = current_param
-
-        self.InitializeComponent()
-
-    def InitializeComponent(self):
-        self.Text = "Выбор параметра для " + LabelUtils.GetLabelFor(
-            BuiltInCategory(self.category.Id.IntegerValue)
-        )
-        self.Size = Size(400, 300)
-        self.StartPosition = FormStartPosition.CenterParent
-        self.FormBorderStyle = FormBorderStyle.FixedDialog
-        self.MaximizeBox = False
-        self.MinimizeBox = False
-        self.TopMost = True
-        self.lstParams = ListBox()
-        self.lstParams.Location = Point(10, 40)
-        self.lstParams.Size = Size(360, 200)
-        self.lstParams.DoubleClick += self.OnParamSelected
-
-        controls = [
-            Label(
-                Text="Выберите параметр:", Location=Point(10, 10), Size=Size(200, 20)
-            ),
-            self.lstParams,
-            Button(Text="OK", Location=Point(200, 250), Size=Size(75, 25)),
-            Button(Text="Отмена", Location=Point(285, 250), Size=Size(75, 25)),
-        ]
-        self.btnOK, self.btnCancel = controls[2], controls[3]
-        self.btnOK.Click += self.OnOKClick
-        self.btnCancel.Click += self.OnCancelClick
-
-        self.PopulateParams()
-
-        for c in controls:
-            self.Controls.Add(c)
-
-    def PopulateParams(self):
-        self.lstParams.Items.Clear()
-        for param in self.available_params:
-            self.lstParams.Items.Add(param)
-        if self.selected_parameter and self.selected_parameter in self.available_params:
-            self.lstParams.SelectedItem = self.selected_parameter
-
-    def OnParamSelected(self, sender, args):
-        if self.lstParams.SelectedItem:
-            self.selected_parameter = self.lstParams.SelectedItem
-            self.DialogResult = DialogResult.OK
-            self.Close()
-
-    def OnOKClick(self, sender, args):
-        if self.lstParams.SelectedItem:
-            self.selected_parameter = self.lstParams.SelectedItem
-            self.DialogResult = DialogResult.OK
-            self.Close()
-        else:
-            print("Выберите параметр!")
-
-    def OnCancelClick(self, sender, args):
-        self.DialogResult = DialogResult.Cancel
-        self.Close()
-
-    @property
-    def SelectedParameter(self):
-        return self.selected_parameter
-
-
 def main():
     try:
         doc = __revit__.ActiveUIDocument.Document
         uidoc = __revit__.ActiveUIDocument
         if doc and uidoc:
+            if PYREVIT_AVAILABLE:
+                logger.info("Запуск скрипта Автодлина марок")
+                logger.info("Версия: {}".format(__ver__))
             Application.Run(MainForm(doc, uidoc))
-    except Exception, e:
-        pass
+    except Exception as e:
+        error_msg = "Ошибка при запуске скрипта: {}".format(str(e))
+        if PYREVIT_AVAILABLE:
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
+        else:
+            print(error_msg)
+            traceback.print_exc()
+        MessageBox.Show(error_msg, "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error)
 
 
 if __name__ == "__main__":
