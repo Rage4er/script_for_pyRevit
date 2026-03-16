@@ -3,10 +3,10 @@ __title__ = """Автодлина
 марок"""
 __author__ = "Rage"
 __doc__ = (
-    """Автоматическа корректировка длины полки марок 
-    на виде в зависимости от содержимого"""
+    """Автоматическая корректировка длины полки марок
+    на 3D-видах и планах в зависимости от содержимого"""
 )
-__ver__ = "1.1"
+__ver__ = "2.0"
 
 import clr
 
@@ -15,6 +15,7 @@ clr.AddReference("RevitAPIUI")
 clr.AddReference("System.Windows.Forms")
 clr.AddReference("System.Drawing")
 
+import codecs
 import json
 import math
 import os
@@ -22,7 +23,7 @@ import sys
 import traceback
 
 from Autodesk.Revit.DB import *
-from System import Array, Environment
+from System import Array, Decimal, Environment, Object
 from System.Drawing import *
 from System.Windows.Forms import *
 
@@ -38,16 +39,22 @@ except:
     PYREVIT_AVAILABLE = False
 
 MM_TO_FEET = 304.8
+DEFAULT_LENGTH_COEFFICIENT = 1.6  # Коэффициент расчёта длины полки
 
 
 class Settings(object):
     """Класс для хранения настроек скрипта: выбранные виды, категории и параметры."""
 
     def __init__(self):
+        self.selected_view_types = []  # Типы видов: 3D, Планы
         self.selected_views = []
         self.selected_categories = []
         self.available_parameters = {}
         self.selected_parameters = {}
+        # Раздельные настройки параметров для 3D и планов
+        self.selected_parameters_3d = {}
+        self.selected_parameters_plan = {}
+        self.length_coefficient = DEFAULT_LENGTH_COEFFICIENT  # Коэффициент длины полки
 
 
 class MainForm(Form):
@@ -59,13 +66,14 @@ class MainForm(Form):
         self.settings = Settings()
         self.all_views_dict = {}
         self.views_dict = {}
+        self.lstViewsChecked = {}
         self.category_mapping = {}
 
         self.LoadTagDefaults()
 
         self.InitializeComponent()
-        self.Load3DViews()
-        
+        self.LoadAllViews()
+
         # Инициализируем логирование
         if PYREVIT_AVAILABLE:
             logger.info("Инициализация формы MainForm")
@@ -117,7 +125,7 @@ class MainForm(Form):
         controls = [
             self.CreateControl(
                 Label,
-                Text="Выберите 3D виды:",
+                Text="Выберите виды (3D и планы):",
                 Location=Point(10, 10),
                 Size=Size(300, 20),
             ),
@@ -143,46 +151,115 @@ class MainForm(Form):
         for c in controls:
             tab.Controls.Add(c)
         self.txtSearchViews.TextChanged += self.OnSearchViewsTextChanged
-        
+
         if PYREVIT_AVAILABLE:
             logger.debug("Вкладка 1 (Виды) настроена")
 
     def SetupTab2(self, tab):  # Категории и Параметры
-        self.lstParameterSelection = ListView()
-        self.lstParameterSelection.Location = Point(10, 40)
-        self.lstParameterSelection.Size = Size(700, 300)
-        self.lstParameterSelection.View = View.Details
-        self.lstParameterSelection.FullRowSelect = True
-        self.lstParameterSelection.GridLines = True
-        self.lstParameterSelection.Columns.Add("Категория", 200)
-        self.lstParameterSelection.Columns.Add("Параметр", 400)
-        self.lstParameterSelection.DoubleClick += self.OnParameterSelectionDoubleClick
+        # Заголовок
+        lblTitle = self.CreateControl(
+            Label,
+            Text="Настройки параметров:",
+            Location=Point(10, 10),
+            Size=Size(400, 20),
+            Font=Font(self.Font.FontFamily, self.Font.Size, FontStyle.Bold)
+        )
+        tab.Controls.Add(lblTitle)
 
+        # Настройка коэффициента длины
+        lblCoefficient = self.CreateControl(
+            Label,
+            Text="Коэффициент длины полки:",
+            Location=Point(10, 40),
+            Size=Size(150, 20)
+        )
+        tab.Controls.Add(lblCoefficient)
+
+        self.numCoefficient = self.CreateControl(
+            NumericUpDown,
+            Location=Point(170, 40),
+            Size=Size(80, 20),
+            Value=self.settings.length_coefficient,
+            Minimum=0.5,
+            Maximum=5.0,
+            Increment=0.1,
+            DecimalPlaces=1  # Показываем 1 знак после запятой
+        )
+        tab.Controls.Add(self.numCoefficient)
+
+        lblCoefficientHint = self.CreateControl(
+            Label,
+            Text="Длина = символы × коэф. + 1 мм",
+            Location=Point(260, 40),
+            Size=Size(200, 20),
+            ForeColor=Color.Gray
+        )
+        tab.Controls.Add(lblCoefficientHint)
+
+        # Раздельные таблицы для 3D и планов
+        lbl3D = self.CreateControl(
+            Label,
+            Text="3D виды - параметры:",
+            Location=Point(10, 70),
+            Size=Size(200, 20),
+            Font=Font(self.Font.FontFamily, self.Font.Size, FontStyle.Bold),
+            ForeColor=Color.DarkBlue
+        )
+        tab.Controls.Add(lbl3D)
+
+        self.lstParameterSelection3D = ListView()
+        self.lstParameterSelection3D.Location = Point(10, 95)
+        self.lstParameterSelection3D.Size = Size(700, 120)
+        self.lstParameterSelection3D.View = View.Details
+        self.lstParameterSelection3D.FullRowSelect = True
+        self.lstParameterSelection3D.GridLines = True
+        self.lstParameterSelection3D.Columns.Add("Категория", 200)
+        self.lstParameterSelection3D.Columns.Add("Параметр", 400)
+        self.lstParameterSelection3D.DoubleClick += self.OnParameterSelectionDoubleClick3D
+        tab.Controls.Add(self.lstParameterSelection3D)
+
+        lblPlan = self.CreateControl(
+            Label,
+            Text="Планы - параметры:",
+            Location=Point(10, 220),
+            Size=Size(200, 20),
+            Font=Font(self.Font.FontFamily, self.Font.Size, FontStyle.Bold),
+            ForeColor=Color.DarkGreen
+        )
+        tab.Controls.Add(lblPlan)
+
+        self.lstParameterSelectionPlan = ListView()
+        self.lstParameterSelectionPlan.Location = Point(10, 245)
+        self.lstParameterSelectionPlan.Size = Size(700, 120)
+        self.lstParameterSelectionPlan.View = View.Details
+        self.lstParameterSelectionPlan.FullRowSelect = True
+        self.lstParameterSelectionPlan.GridLines = True
+        self.lstParameterSelectionPlan.Columns.Add("Категория", 200)
+        self.lstParameterSelectionPlan.Columns.Add("Параметр", 400)
+        self.lstParameterSelectionPlan.DoubleClick += self.OnParameterSelectionDoubleClickPlan
+        tab.Controls.Add(self.lstParameterSelectionPlan)
+
+        # Кнопки навигации
         controls = [
             self.CreateControl(
-                Label,
-                Text="Выберите параметр для каждой категории:",
-                Location=Point(10, 10),
-                Size=Size(400, 20),
-            ),
-            self.lstParameterSelection,
-            self.CreateControl(
-                Button, Text="← Назад", Location=Point(500, 350), Size=Size(80, 25)
+                Button, Text="← Назад", Location=Point(500, 380), Size=Size(80, 25)
             ),
             self.CreateControl(
-                Button, Text="Далее →", Location=Point(600, 350), Size=Size(80, 25)
+                Button, Text="Далее →", Location=Point(600, 380), Size=Size(80, 25)
             ),
         ]
-        self.btnBack1 = controls[2]
-        self.btnNext2 = controls[3]
+        self.btnBack1 = controls[0]
+        self.btnNext2 = controls[1]
         self.btnBack1.Click += self.OnBack1Click
         self.btnNext2.Click += self.OnNext2Click
         for c in controls:
             tab.Controls.Add(c)
+
         self.CollectCategories()
         self.CollectParameters()
-        self.PopulateParameterSelection()
-        
+        self.PopulateParameterSelection3D()
+        self.PopulateParameterSelectionPlan()
+
         if PYREVIT_AVAILABLE:
             logger.debug("Вкладка 2 (Категории и Параметры) настроена")
 
@@ -240,41 +317,72 @@ class MainForm(Form):
         if PYREVIT_AVAILABLE:
             logger.debug("Вкладка 3 (Результаты) настроена")
 
-    def Load3DViews(self):
+    def LoadAllViews(self):
+        """Загружает список всех видов (3D и планы) с сортировкой по имени."""
         try:
-            views = (
+            self.lstViews.Items.Clear()
+            self.all_views_dict.clear()
+            self.views_dict.clear()
+            self.lstViewsChecked.clear()
+
+            # Собираем 3D виды
+            views_3d = (
                 FilteredElementCollector(self.doc)
                 .OfClass(View3D)
                 .WhereElementIsNotElementType()
                 .ToElements()
             )
-            self.lstViews.Items.Clear()
-            self.all_views_dict.clear()
-            for view in views:
-                if (
-                    view.CanBePrinted
-                    and not view.IsTemplate
-                    and not view.Name.startswith("{")
-                ):
-                    self.lstViews.Items.Add(view.Name, False)
-                    self.all_views_dict[view.Name] = view
-            self.UpdateViewsList("")
-            
+
+            # Собираем планы этажей
+            views_plan = (
+                FilteredElementCollector(self.doc)
+                .OfClass(ViewPlan)
+                .WhereElementIsNotElementType()
+                .ToElements()
+            )
+
+            all_views = list(views_3d) + list(views_plan)
+
+            # Сортируем виды по имени
+            all_views_sorted = sorted(all_views, key=lambda v: v.Name or "")
+
+            for view in all_views_sorted:
+                if not view.IsTemplate and view.CanBePrinted:
+                    # Определяем тип вида
+                    view_type = "3D" if isinstance(view, View3D) else "План"
+                    name = "{0} [{1}] (ID: {2})".format(
+                        view.Name,
+                        view_type,
+                        str(view.Id.IntegerValue)
+                    )
+                    self.all_views_dict[name] = view
+                    self.lstViewsChecked[name] = False
+
+            self.UpdateViewsList("")  # Показать все
+
             if PYREVIT_AVAILABLE:
-                logger.info("Загружено {} 3D видов".format(len(self.all_views_dict)))
+                logger.info("Загружено {} видов (3D + планы)".format(len(self.all_views_dict)))
         except Exception as e:
             if PYREVIT_AVAILABLE:
-                logger.error("Ошибка при загрузке 3D видов: {}".format(str(e)))
+                logger.error("Ошибка при загрузке видов: {}".format(str(e)))
             else:
-                print("Ошибка при загрузке 3D видов: {}".format(str(e)))
+                print("Ошибка при загрузке видов: {}".format(str(e)))
 
     def UpdateViewsList(self, filter_text):
+        """Обновляет список видов с фильтром и сортировкой."""
         self.lstViews.Items.Clear()
         self.views_dict.clear()
-        for name, view in self.all_views_dict.items():
-            if not filter_text or filter_text.lower() in name.lower():
-                checked = name in [v.Name for v in self.settings.selected_views]
-                self.lstViews.Items.Add(name, checked)
+        filter_lower = filter_text.lower()
+
+        # Сортируем виды по имени перед добавлением
+        sorted_views = sorted(
+            self.all_views_dict.items(),
+            key=lambda x: x[0].lower()  # Сортировка по имени вида
+        )
+
+        for name, view in sorted_views:
+            if filter_lower in name.lower():
+                self.lstViews.Items.Add(name, self.lstViewsChecked.get(name, False))
                 self.views_dict[name] = view
 
     def OnToggleViews(self, checked):
@@ -307,13 +415,20 @@ class MainForm(Form):
         self.tabControl.Selecting += self.OnTabSelecting
 
     def OnNext2Click(self, sender, args):
-        selected_cats = [item.Tag for item in self.lstParameterSelection.Items]
-        for item in self.lstParameterSelection.Items:
-            if item.SubItems[1].Text != "Не выбран":
-                selected_cats.append(item.Tag)
-        if not any(p for p in self.settings.selected_parameters.values() if p):
+        # Сохраняем коэффициент длины полки
+        self.settings.length_coefficient = float(self.numCoefficient.Value)
+        
+        # Проверяем, что выбраны параметры
+        has_3d_params = any(p for p in self.settings.selected_parameters_3d.values() if p)
+        has_plan_params = any(p for p in self.settings.selected_parameters_plan.values() if p)
+        
+        if not has_3d_params and not has_plan_params:
             MessageBox.Show("Выберите параметры для категорий!")
             return
+        
+        if PYREVIT_AVAILABLE:
+            logger.info("Коэффициент длины полки установлен: {}".format(self.settings.length_coefficient))
+        
         self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 2
         self.tabControl.Selecting += self.OnTabSelecting
@@ -346,7 +461,7 @@ class MainForm(Form):
 
             self.settings.selected_categories = list(unique_cats)
             self.CollectParameters()
-            
+
             if PYREVIT_AVAILABLE:
                 logger.info("Собрано {} категорий".format(len(self.settings.selected_categories)))
         except Exception as e:
@@ -426,6 +541,100 @@ class MainForm(Form):
                 else:
                     print("Ошибка при сборе параметров для категории {}: {}".format(self.GetCategoryName(category), str(e)))
 
+    def PopulateParameterSelection3D(self):
+        """Заполняет таблицу параметров для 3D видов"""
+        self.lstParameterSelection3D.Items.Clear()
+        for category in self.settings.selected_categories:
+            item = ListViewItem(self.GetCategoryName(category))
+            param = self.settings.selected_parameters_3d.get(
+                category.Id.IntegerValue, "Не выбран"
+            )
+            item.SubItems.Add(param)
+            item.Tag = category.Id.IntegerValue
+            self.lstParameterSelection3D.Items.Add(item)
+
+    def PopulateParameterSelectionPlan(self):
+        """Заполняет таблицу параметров для планов"""
+        self.lstParameterSelectionPlan.Items.Clear()
+        for category in self.settings.selected_categories:
+            item = ListViewItem(self.GetCategoryName(category))
+            param = self.settings.selected_parameters_plan.get(
+                category.Id.IntegerValue, "Не выбран"
+            )
+            item.SubItems.Add(param)
+            item.Tag = category.Id.IntegerValue
+            self.lstParameterSelectionPlan.Items.Add(item)
+
+    def OnParameterSelectionDoubleClick3D(self, sender, args):
+        """Обработчик двойного клика по таблице параметров 3D"""
+        if self.lstParameterSelection3D.SelectedItems.Count == 0:
+            return
+        selected = self.lstParameterSelection3D.SelectedItems[0]
+        cat_id = selected.Tag
+        category_obj = next(
+            (c for c in self.settings.selected_categories if c.Id.IntegerValue == cat_id),
+            None
+        )
+        if not category_obj:
+            return
+        available_params = self.settings.parameters_by_category.get(cat_id, [])
+        current_param = self.settings.selected_parameters_3d.get(cat_id)
+        form = ParameterSelectionForm(
+            self.doc, category_obj, available_params, current_param
+        )
+        try:
+            if form.ShowDialog() == DialogResult.OK:
+                self.settings.selected_parameters_3d[cat_id] = form.SelectedParameter
+                selected.SubItems[1].Text = form.SelectedParameter or "Не выбран"
+                # Сохранить выбор
+                cat_name = self.GetCategoryName(category_obj)
+                if cat_name not in self.tag_defaults:
+                    self.tag_defaults[cat_name] = {}
+                self.tag_defaults[cat_name]["param_3d"] = form.SelectedParameter
+                self.SaveTagDefaults()
+                if PYREVIT_AVAILABLE:
+                    logger.info("Выбран параметр '{}' для категории '{}' (3D)".format(form.SelectedParameter, cat_name))
+        except Exception as e:
+            error_msg = "Ошибка в диалоге выбора параметров: {}".format(str(e))
+            if PYREVIT_AVAILABLE:
+                logger.error(error_msg)
+            MessageBox.Show(error_msg)
+
+    def OnParameterSelectionDoubleClickPlan(self, sender, args):
+        """Обработчик двойного клика по таблице параметров планов"""
+        if self.lstParameterSelectionPlan.SelectedItems.Count == 0:
+            return
+        selected = self.lstParameterSelectionPlan.SelectedItems[0]
+        cat_id = selected.Tag
+        category_obj = next(
+            (c for c in self.settings.selected_categories if c.Id.IntegerValue == cat_id),
+            None
+        )
+        if not category_obj:
+            return
+        available_params = self.settings.parameters_by_category.get(cat_id, [])
+        current_param = self.settings.selected_parameters_plan.get(cat_id)
+        form = ParameterSelectionForm(
+            self.doc, category_obj, available_params, current_param
+        )
+        try:
+            if form.ShowDialog() == DialogResult.OK:
+                self.settings.selected_parameters_plan[cat_id] = form.SelectedParameter
+                selected.SubItems[1].Text = form.SelectedParameter or "Не выбран"
+                # Сохранить выбор
+                cat_name = self.GetCategoryName(category_obj)
+                if cat_name not in self.tag_defaults:
+                    self.tag_defaults[cat_name] = {}
+                self.tag_defaults[cat_name]["param_plan"] = form.SelectedParameter
+                self.SaveTagDefaults()
+                if PYREVIT_AVAILABLE:
+                    logger.info("Выбран параметр '{}' для категории '{}' (План)".format(form.SelectedParameter, cat_name))
+        except Exception as e:
+            error_msg = "Ошибка в диалоге выбора параметров: {}".format(str(e))
+            if PYREVIT_AVAILABLE:
+                logger.error(error_msg)
+            MessageBox.Show(error_msg)
+
     def PopulateParameterSelection(self):
         self.lstParameterSelection.Items.Clear()
         for category in self.settings.selected_categories:
@@ -491,15 +700,37 @@ class MainForm(Form):
         self.Close()
 
     def LoadTagDefaults(self):
+        """Загружает сохраненные настройки из файла (коэффициент и параметры для 3D/планов)."""
         self.tag_defaults = {}
         script_dir = os.path.dirname(__file__)
         defaults_path = os.path.join(script_dir, "tag_defaults.json")
         if os.path.exists(defaults_path):
             try:
-                with open(defaults_path, "r") as f:
+                with codecs.open(defaults_path, "r", encoding="utf-8") as f:
                     self.tag_defaults = json.load(f)
+                
+                # Загружаем коэффициент
+                if "length_coefficient" in self.tag_defaults:
+                    self.settings.length_coefficient = self.tag_defaults.get("length_coefficient", DEFAULT_LENGTH_COEFFICIENT)
+                
+                # Загружаем параметры для 3D
+                for cat_name, cat_data in self.tag_defaults.items():
+                    if isinstance(cat_data, dict) and "param_3d" in cat_data:
+                        # Найти категорию по имени
+                        for cat in self.settings.selected_categories:
+                            if self.GetCategoryName(cat) == cat_name:
+                                self.settings.selected_parameters_3d[cat.Id.IntegerValue] = cat_data["param_3d"]
+                
+                # Загружаем параметры для планов
+                for cat_name, cat_data in self.tag_defaults.items():
+                    if isinstance(cat_data, dict) and "param_plan" in cat_data:
+                        for cat in self.settings.selected_categories:
+                            if self.GetCategoryName(cat) == cat_name:
+                                self.settings.selected_parameters_plan[cat.Id.IntegerValue] = cat_data["param_plan"]
+                
                 if PYREVIT_AVAILABLE:
                     logger.info("Загружены настройки из {}".format(defaults_path))
+                    logger.info("Коэффициент длины полки: {}".format(self.settings.length_coefficient))
             except Exception as e:
                 if PYREVIT_AVAILABLE:
                     logger.warning("Не удалось загрузить настройки: {}".format(str(e)))
@@ -508,10 +739,15 @@ class MainForm(Form):
                 logger.info("Файл настроек не найден, будут использованы значения по умолчанию")
 
     def SaveTagDefaults(self):
+        """Сохраняет настройки в файл (коэффициент и параметры для 3D/планов)."""
         script_dir = os.path.dirname(__file__)
         defaults_path = os.path.join(script_dir, "tag_defaults.json")
+        
+        # Сохраняем коэффициент
+        self.tag_defaults["length_coefficient"] = self.settings.length_coefficient
+        
         try:
-            with open(defaults_path, "w") as f:
+            with codecs.open(defaults_path, "w", encoding="utf-8") as f:
                 json.dump(self.tag_defaults, f, indent=4, ensure_ascii=False)
             if PYREVIT_AVAILABLE:
                 logger.debug("Настройки сохранены в {}".format(defaults_path))
@@ -520,21 +756,29 @@ class MainForm(Form):
                 logger.error("Ошибка при сохранении настроек: {}".format(str(e)))
 
     def generate_new_name_and_num(self, tag_type, required_length):
+        """Генерирует новое имя для типоразмера на основе длины полки."""
         name_param = tag_type.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM)
         if name_param and name_param.HasValue:
             symbol_name = name_param.AsString()
         else:
             symbol_name = tag_type.Name
 
-        parts = symbol_name.split("_")
+        # Извлекаем префикс - всё до ПОСЛЕДНЕГО подчёркивания с цифрой
+        # Примеры:
+        # "Размер / Расход_11" → "Размер / Расход"
+        # "Размер_13" → "Размер"
+        # "Марка_8" → "Марка"
+        prefix = symbol_name
+        
+        # Ищем последнее подчёркивание с цифрами после него
+        parts = symbol_name.rsplit("_", 1)
         if len(parts) > 1:
+            # Проверяем, что после подчёркивания цифры
             try:
-                base_num = int(parts[-1])
-                prefix = "_".join(parts[:-1])
+                int(parts[1])
+                prefix = parts[0]  # Берём часть до последнего "_"
             except ValueError:
-                prefix = symbol_name
-        else:
-            prefix = symbol_name
+                pass  # Если после "_" не цифры, оставляем как есть
 
         family = tag_type.Family
         existing_names = set()
@@ -689,7 +933,7 @@ class MainForm(Form):
                                         if value is None:
                                             value = ""
                                         char_count = len(value)
-                                        required_length = math.ceil(char_count * 1.6 + 1)
+                                        required_length = math.ceil(char_count * self.settings.length_coefficient + 1)
                                         
                                         if PYREVIT_AVAILABLE:
                                             logger.debug("Марка ID {}: значение '{}', символов: {}, требуемая длина: {}мм".format(tag.Id, value, char_count, required_length))
@@ -711,15 +955,21 @@ class MainForm(Form):
                                             continue
 
                                         family_id = base_symbol.Family.Id.IntegerValue
+                                        
+                                        # Определяем тип вида (3D или План)
+                                        view = tag.Document.GetElement(tag.OwnerViewId)
+                                        is_3d_view = isinstance(view, View3D) if view else False
+                                        view_key = "3d" if is_3d_view else "plan"
 
-                                        # Инициализировать словарь для семейства
-                                        if family_id not in created_symbols:
-                                            created_symbols[family_id] = {}
+                                        # Инициализировать словарь для семейства + типа вида
+                                        cache_key = (family_id, view_key)
+                                        if cache_key not in created_symbols:
+                                            created_symbols[cache_key] = {}
 
                                         # Создать новый символ, если нужен
                                         if (
                                             required_length
-                                            not in created_symbols[family_id]
+                                            not in created_symbols[cache_key]
                                         ):
                                             new_name, shelf_num, existing_id = (
                                                 self.generate_new_name_and_num(
@@ -732,11 +982,11 @@ class MainForm(Form):
                                                 new_symbol = self.doc.GetElement(
                                                     existing_id
                                                 )
-                                                created_symbols[family_id][
+                                                created_symbols[cache_key][
                                                     required_length
                                                 ] = new_symbol
                                                 if PYREVIT_AVAILABLE:
-                                                    logger.info("Создан новый символ: {} (длина {}мм) для семейства ID {}".format(new_name, required_length, family_id))
+                                                    logger.info("Найден существующий символ: {} (длина {}мм) для семейства ID {} ({})".format(new_name, required_length, family_id, view_key))
                                             else:
                                                 # Создать новый символ
                                                 new_symbol = base_symbol.Duplicate(new_name)
@@ -770,12 +1020,12 @@ class MainForm(Form):
                                                 if not shelf_set:
                                                     if PYREVIT_AVAILABLE:
                                                         logger.warning("Не найдено параметра для установки длины полки в символе {}".format(new_name))
-                                                created_symbols[family_id][
+                                                created_symbols[cache_key][
                                                     required_length
                                                 ] = new_symbol
 
                                         # Назначить новый символ марке
-                                        new_symbol = created_symbols[family_id][
+                                        new_symbol = created_symbols[cache_key][
                                             required_length
                                         ]
                                         if tag.GetTypeId() != new_symbol.Id:
@@ -912,13 +1162,15 @@ class ParameterSelectionForm(Form):
         self.InitializeComponent()
 
     def InitializeComponent(self):
-        self.Text = "Выбор параметра для категории '{}'".format(
-            __revit__.Application.ActiveUIDocument.Document.GetCategoryName(
-                self.category
-            )
-            if self.category
-            else "Неизвестная"
-        )
+        # Получаем имя категории через self.doc
+        cat_name = "Неизвестная"
+        if self.category:
+            try:
+                cat_name = self.category.Name or "Неизвестная"
+            except:
+                pass
+        
+        self.Text = "Выбор параметра для категории '{}'".format(cat_name)
         self.Size = Size(450, 400)
         self.StartPosition = FormStartPosition.CenterScreen
         self.TopMost = True
@@ -937,6 +1189,7 @@ class ParameterSelectionForm(Form):
         self.lstParams.Size = Size(410, 250)
         self.lstParams.SelectionMode = SelectionMode.One
         self.lstParams.Items.AddRange(Array[Object](self.filtered_params))
+        self.lstParams.DoubleClick += self.OnParamsDoubleClick  # Добавляем обработку двойного клика
         if self.selected_parameter and self.selected_parameter in self.filtered_params:
             self.lstParams.SelectedItem = self.selected_parameter
 
@@ -953,7 +1206,7 @@ class ParameterSelectionForm(Form):
         self.btnCancel.Click += self.OnCancelClick
 
         self.Controls.AddRange(
-            [self.lblSearch, self.txtSearch, self.lstParams, self.btnOK, self.btnCancel]
+            Array[Control]([self.lblSearch, self.txtSearch, self.lstParams, self.btnOK, self.btnCancel])
         )
 
     def OnSearchTextChanged(self, sender, args):
@@ -970,6 +1223,13 @@ class ParameterSelectionForm(Form):
         self.DialogResult = DialogResult.OK
         self.Close()
 
+    def OnParamsDoubleClick(self, sender, args):
+        """Обработка двойного клика - выбор и закрытие"""
+        if self.lstParams.SelectedItem:
+            self.selected_parameter = self.lstParams.SelectedItem
+        self.DialogResult = DialogResult.OK
+        self.Close()
+
     def OnCancelClick(self, sender, args):
         self.DialogResult = DialogResult.Cancel
         self.Close()
@@ -981,8 +1241,16 @@ class ParameterSelectionForm(Form):
 
 def main():
     try:
-        doc = __revit__.ActiveUIDocument.Document
-        uidoc = __revit__.ActiveUIDocument
+        # Проверка наличия __revit__ (переменная pyRevit)
+        try:
+            revit_app = __revit__
+        except NameError:
+            error_msg = "Скрипт должен быть запущен через pyRevit!"
+            MessageBox.Show(error_msg, "Ошибка", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            return
+        
+        doc = revit_app.ActiveUIDocument.Document
+        uidoc = revit_app.ActiveUIDocument
         if doc and uidoc:
             if PYREVIT_AVAILABLE:
                 logger.info("Запуск скрипта Автодлина марок")
