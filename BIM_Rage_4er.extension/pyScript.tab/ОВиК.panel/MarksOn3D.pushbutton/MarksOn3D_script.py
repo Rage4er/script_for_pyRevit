@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 __title__ = """Марки
- на 3D"""
+ на видах"""
 __author__ = "Rage"
-__doc__ = "Автоматическое размещение марок на 3D-видах"
-__version__ = "1.0"
+__doc__ = "Автоматическое размещение марок на 3D-видах и планах"
+__version__ = "1.1"
 
 import clr
 
@@ -12,9 +12,11 @@ clr.AddReference("RevitAPIUI")
 clr.AddReference("System.Windows.Forms")
 clr.AddReference("System.Drawing")
 
+import codecs
 import datetime
 import json
 import os
+import random
 
 from Autodesk.Revit.DB import *
 from System.Drawing import *
@@ -24,6 +26,7 @@ from System.Windows.Forms import *
 MM_TO_FEET = 304.8
 DEFAULT_OFFSET_X = 60.0
 DEFAULT_OFFSET_Y = 30.0
+VIEW_TYPES = ["3D виды", "Планы этажей"]  # Доступные типы видов
 
 
 # Логирование
@@ -86,10 +89,13 @@ class TagSettings(object):
     Класс для хранения настроек расстановки марок.
 
     Attributes:
-        selected_views (list): Выбранные 3D-виды.
+        selected_view_types (list): Выбранные типы видов (3D, Планы).
+        selected_views (list): Выбранные виды.
         selected_categories (list): Выбранные категории элементов.
-        category_tag_families (dict): Семейства марок по категориям.
-        category_tag_types (dict): Типоразмеры марок по категориям.
+        category_tag_families_3d (dict): Семейства марок по категориям для 3D.
+        category_tag_types_3d (dict): Типоразмеры марок по категориям для 3D.
+        category_tag_families_plan (dict): Семейства марок по категориям для планов.
+        category_tag_types_plan (dict): Типоразмеры марок по категориям для планов.
         offset_x (float): Смещение по X в мм.
         offset_y (float): Смещение по Y в мм.
         orientation (TagOrientation): Ориентация марки.
@@ -101,15 +107,20 @@ class TagSettings(object):
         """
         Инициализирует настройки с значениями по умолчанию.
         """
+        self.selected_view_types = []
         self.selected_views = []
         self.selected_categories = []
-        self.category_tag_families = {}
-        self.category_tag_types = {}
+        # Раздельные настройки для 3D и планов
+        self.category_tag_families_3d = {}
+        self.category_tag_types_3d = {}
+        self.category_tag_families_plan = {}
+        self.category_tag_types_plan = {}
         self.offset_x = DEFAULT_OFFSET_X
         self.offset_y = DEFAULT_OFFSET_Y
         self.orientation = TagOrientation.Horizontal
         self.use_leader = True
         self.enable_logging = False
+        self.random_offset = True  # Случайное направление смещения
 
 
 # Главная форма
@@ -146,13 +157,13 @@ class MainForm(Form):
         self.tag_defaults = self.LoadTagDefaults()
 
         self.InitializeComponent()
-        self.Load3DViews()
+        self.LoadAllViews()
 
     def InitializeComponent(self):
         """
         Инициализирует компоненты формы.
         """
-        self.Text = "Расстановка марок на 3D видах"
+        self.Text = "Расстановка марок на видах (3D и планы)"
         self.Size = Size(750, 550)
         self.StartPosition = FormStartPosition.CenterScreen
         self.tabControl = TabControl()
@@ -296,66 +307,168 @@ class MainForm(Form):
 
     def SetupTab2(self, tab):
         """
-        Настраивает вкладку 2: Категории.
+        Настраивает вкладку 2: Категории (раздельно для 3D и планов).
 
         Args:
             tab (TabPage): Вкладка для настройки.
         """
+        # Заголовки
+        lblTitle3D = self.CreateControl(
+            Label,
+            Text="3D виды - категории:",
+            Location=Point(10, 10),
+            Size=Size(200, 20),
+            Font=Font(self.Font.FontFamily, self.Font.Size, FontStyle.Bold),
+            ForeColor=Color.DarkBlue
+        )
+        tab.Controls.Add(lblTitle3D)
+
+        lblTitlePlan = self.CreateControl(
+            Label,
+            Text="Планы этажей - категории:",
+            Location=Point(10, 240),
+            Size=Size(200, 20),
+            Font=Font(self.Font.FontFamily, self.Font.Size, FontStyle.Bold),
+            ForeColor=Color.DarkGreen
+        )
+        tab.Controls.Add(lblTitlePlan)
+
+        # Список категорий для 3D
+        self.lstCategories3D = CheckedListBox()
+        self.lstCategories3D.Location = Point(10, 35)
+        self.lstCategories3D.Size = Size(300, 193)
+        self.lstCategories3D.CheckOnClick = True
+        tab.Controls.Add(self.lstCategories3D)
+
+        # Список категорий для планов
+        self.lstCategoriesPlan = CheckedListBox()
+        self.lstCategoriesPlan.Location = Point(10, 265)
+        self.lstCategoriesPlan.Size = Size(300, 193)
+        self.lstCategoriesPlan.CheckOnClick = True
+        tab.Controls.Add(self.lstCategoriesPlan)
+
+        # Кнопки выбора
+        self.btnSelectAllCats = Button()
+        self.btnSelectAllCats.Text = "Выбрать все"
+        self.btnSelectAllCats.Location = Point(320, 35)
+        self.btnSelectAllCats.Size = Size(120, 25)
+        self.btnSelectAllCats.Click += self.OnSelectAllCategoriesClick
+        tab.Controls.Add(self.btnSelectAllCats)
+
+        self.btnDeselectAllCats = Button()
+        self.btnDeselectAllCats.Text = "Снять все"
+        self.btnDeselectAllCats.Location = Point(320, 65)
+        self.btnDeselectAllCats.Size = Size(120, 25)
+        self.btnDeselectAllCats.Click += self.OnDeselectAllCategoriesClick
+        tab.Controls.Add(self.btnDeselectAllCats)
+
+        # Подсказка
+        lblHint = self.CreateControl(
+            Label,
+            Text="Выберите категории отдельно для 3D видов и планов",
+            Location=Point(320, 100),
+            Size=Size(250, 40),
+            ForeColor=Color.DarkSlateGray
+        )
+        tab.Controls.Add(lblHint)
+
+        # Кнопки навигации
         controls = [
-            self.CreateControl(
-                Label,
-                Text="Выберите категории элементов:",
-                Location=Point(10, 10),
-                Size=Size(300, 20),
-            ),
-            self.CreateControl(
-                CheckedListBox,
-                Location=Point(10, 40),
-                Size=Size(600, 400),
-                CheckOnClick=True,
+            self.CreateButton(
+                "← Назад", Point(500, 455), click_handler=self.OnBack1Click
             ),
             self.CreateButton(
-                "← Назад", Point(500, 450), click_handler=self.OnBack1Click
-            ),
-            self.CreateButton(
-                "Далее →", Point(600, 450), click_handler=self.OnNext2Click
+                "Далее →", Point(600, 455), click_handler=self.OnNext2Click
             ),
         ]
-        self.lblCategories, self.lstCategories, self.btnBack1, self.btnNext2 = controls
         for c in controls:
             tab.Controls.Add(c)
 
+    def OnSelectAllCategoriesClick(self, sender, args):
+        """Выбрать все категории в обоих списках"""
+        for i in range(self.lstCategories3D.Items.Count):
+            self.lstCategories3D.SetItemChecked(i, True)
+        for i in range(self.lstCategoriesPlan.Items.Count):
+            self.lstCategoriesPlan.SetItemChecked(i, True)
+
+    def OnDeselectAllCategoriesClick(self, sender, args):
+        """Снять все категории в обоих списках"""
+        for i in range(self.lstCategories3D.Items.Count):
+            self.lstCategories3D.SetItemChecked(i, False)
+        for i in range(self.lstCategoriesPlan.Items.Count):
+            self.lstCategoriesPlan.SetItemChecked(i, False)
+
     def SetupTab3(self, tab):
         """
-        Настраивает вкладку 3: Марки.
+        Настраивает вкладку 3: Марки (две отдельные таблицы для 3D и планов).
 
         Args:
             tab (TabPage): Вкладка для настройки.
         """
-        self.lstTagFamilies = ListView()
-        self.lstTagFamilies.Location = Point(10, 40)
-        self.lstTagFamilies.Size = Size(700, 400)
-        self.lstTagFamilies.View = View.Details
-        self.lstTagFamilies.FullRowSelect = True
-        self.lstTagFamilies.GridLines = True
-        self.lstTagFamilies.Columns.Add("Категория", 180)
-        self.lstTagFamilies.Columns.Add("Семейство марки", 200)
-        self.lstTagFamilies.Columns.Add("Типоразмер марки", 300)
-        self.lstTagFamilies.DoubleClick += self.OnTagFamilyDoubleClick
+        # Заголовки
+        lblTitle3D = self.CreateControl(
+            Label,
+            Text="3D виды - марки:",
+            Location=Point(10, 10),
+            Size=Size(200, 20),
+            Font=Font(self.Font.FontFamily, self.Font.Size, FontStyle.Bold),
+            ForeColor=Color.DarkBlue
+        )
+        tab.Controls.Add(lblTitle3D)
 
+        lblTitlePlan = self.CreateControl(
+            Label,
+            Text="Планы этажей - марки:",
+            Location=Point(10, 215),
+            Size=Size(200, 20),
+            Font=Font(self.Font.FontFamily, self.Font.Size, FontStyle.Bold),
+            ForeColor=Color.DarkGreen
+        )
+        tab.Controls.Add(lblTitlePlan)
+
+        # Список марок для 3D видов
+        self.lstTagFamilies3D = ListView()
+        self.lstTagFamilies3D.Location = Point(10, 35)
+        self.lstTagFamilies3D.Size = Size(700, 165)
+        self.lstTagFamilies3D.View = View.Details
+        self.lstTagFamilies3D.FullRowSelect = True
+        self.lstTagFamilies3D.GridLines = True
+        self.lstTagFamilies3D.Columns.Add("Категория", 180)
+        self.lstTagFamilies3D.Columns.Add("Семейство марки", 200)
+        self.lstTagFamilies3D.Columns.Add("Типоразмер марки", 300)
+        self.lstTagFamilies3D.DoubleClick += self.OnTagFamilyDoubleClick3D
+        tab.Controls.Add(self.lstTagFamilies3D)
+
+        # Список марок для планов
+        self.lstTagFamiliesPlan = ListView()
+        self.lstTagFamiliesPlan.Location = Point(10, 240)
+        self.lstTagFamiliesPlan.Size = Size(700, 165)
+        self.lstTagFamiliesPlan.View = View.Details
+        self.lstTagFamiliesPlan.FullRowSelect = True
+        self.lstTagFamiliesPlan.GridLines = True
+        self.lstTagFamiliesPlan.Columns.Add("Категория", 180)
+        self.lstTagFamiliesPlan.Columns.Add("Семейство марки", 200)
+        self.lstTagFamiliesPlan.Columns.Add("Типоразмер марки", 300)
+        self.lstTagFamiliesPlan.DoubleClick += self.OnTagFamilyDoubleClickPlan
+        tab.Controls.Add(self.lstTagFamiliesPlan)
+
+        # Подсказка
+        lblHint = self.CreateControl(
+            Label,
+            Text="Настройте марки отдельно для 3D видов и планов этажей",
+            Location=Point(10, 415),
+            Size=Size(500, 20),
+            ForeColor=Color.DarkSlateGray
+        )
+        tab.Controls.Add(lblHint)
+
+        # Кнопки навигации
         controls = [
-            self.CreateControl(
-                Label,
-                Text="Выберите марки для категорий:",
-                Location=Point(10, 10),
-                Size=Size(400, 20),
-            ),
-            self.lstTagFamilies,
             self.CreateButton(
-                "← Назад", Point(500, 450), click_handler=self.OnBack2Click
+                "← Назад", Point(500, 455), click_handler=self.OnBack2Click
             ),
             self.CreateButton(
-                "Далее →", Point(600, 450), click_handler=self.OnNext3Click
+                "Далее →", Point(600, 455), click_handler=self.OnNext3Click
             ),
         ]
         for c in controls:
@@ -370,7 +483,7 @@ class MainForm(Form):
         """
         self.cmbOrientation = ComboBox()
         self.cmbOrientation.Location = Point(170, 50)
-        self.cmbOrientation.Size = Size(100, 20)
+        self.cmbOrientation.Size = Size(150, 20)
         self.cmbOrientation.Items.Add("Горизонтальная")
         self.cmbOrientation.Items.Add("Вертикальная")
         self.cmbOrientation.SelectedIndex = 0
@@ -380,6 +493,12 @@ class MainForm(Form):
         self.chkUseLeader.Location = Point(10, 80)
         self.chkUseLeader.Size = Size(200, 20)
         self.chkUseLeader.Checked = True
+
+        self.chkRandomOffset = CheckBox()
+        self.chkRandomOffset.Text = "Случайное направление смещения"
+        self.chkRandomOffset.Location = Point(10, 105)
+        self.chkRandomOffset.Size = Size(250, 20)
+        self.chkRandomOffset.Checked = True
 
         controls = [
             self.CreateControl(
@@ -393,11 +512,12 @@ class MainForm(Form):
             ),
             self.cmbOrientation,
             self.chkUseLeader,
+            self.chkRandomOffset,
             self.CreateButton(
-                "← Назад", Point(500, 450), click_handler=self.OnBack3Click
+                "← Назад", Point(500, 455), click_handler=self.OnBack3Click
             ),
             self.CreateButton(
-                "Далее →", Point(600, 450), click_handler=self.OnNext4Click
+                "Далее →", Point(600, 455), click_handler=self.OnNext4Click
             ),
         ]
         for c in controls:
@@ -445,36 +565,60 @@ class MainForm(Form):
         for c in controls:
             tab.Controls.Add(c)
 
-    def Load3DViews(self):
+    def LoadAllViews(self):
         """
-        Загружает список 3D-видов в список.
+        Загружает список всех видов (3D и планы) в список.
         """
         try:
-            views = (
+            self.lstViews.Items.Clear()
+            self.all_views_dict.clear()
+            self.views_dict.clear()
+            self.lstViewsChecked.clear()
+
+            # Собираем 3D виды
+            views_3d = (
                 FilteredElementCollector(self.doc)
                 .OfClass(View3D)
                 .WhereElementIsNotElementType()
                 .ToElements()
             )
-            self.lstViews.Items.Clear()
-            self.all_views_dict.clear()
-            self.views_dict.clear()
-            self.lstViewsChecked.clear()
-            for view in views:
+
+            # Собираем планы этажей
+            views_plan = (
+                FilteredElementCollector(self.doc)
+                .OfClass(ViewPlan)
+                .WhereElementIsNotElementType()
+                .ToElements()
+            )
+
+            all_views = list(views_3d) + list(views_plan)
+
+            # Сортируем виды по имени
+            all_views_sorted = sorted(all_views, key=lambda v: v.Name or "")
+
+            for view in all_views_sorted:
                 if not view.IsTemplate and view.CanBePrinted:
-                    name = view.Name + " (ID: " + str(view.Id.IntegerValue) + ")"
+                    # Определяем тип вида
+                    view_type = "3D" if isinstance(view, View3D) else "План"
+                    name = "{0} [{1}] (ID: {2})".format(
+                        view.Name,
+                        view_type,
+                        str(view.Id.IntegerValue)
+                    )
                     self.all_views_dict[name] = view
                     self.lstViewsChecked[name] = False
+
             self.UpdateViewsList("")  # Показать все
             if self.lstViews.Items.Count > 0:
                 self.lstViews.SetItemChecked(0, True)
                 self.lstViewsChecked[self.lstViews.Items[0]] = True
+
         except Exception as e:
             MessageBox.Show("Ошибка загрузки видов: " + str(e))
 
     def UpdateViewsList(self, filter_text):
         """
-        Обновляет список видов с фильтром.
+        Обновляет список видов с фильтром и сортировкой по имени.
 
         Args:
             filter_text (str): Текст фильтра.
@@ -482,7 +626,14 @@ class MainForm(Form):
         self.lstViews.Items.Clear()
         self.views_dict.clear()
         filter_lower = filter_text.lower()
-        for name, view in self.all_views_dict.items():
+        
+        # Сортируем виды по имени перед добавлением
+        sorted_views = sorted(
+            self.all_views_dict.items(),
+            key=lambda x: x[0].lower()  # Сортировка по имени вида (ключ словаря)
+        )
+        
+        for name, view in sorted_views:
             if filter_lower in name.lower():
                 self.lstViews.Items.Add(name, self.lstViewsChecked.get(name, False))
                 self.views_dict[name] = view
@@ -541,17 +692,33 @@ class MainForm(Form):
         self.logger.enabled = sender.Checked
 
     def OnNext2Click(self, sender, args):
+        # Собираем категории из обоих списков
         self.settings.selected_categories = []
-        for i in range(self.lstCategories.Items.Count):
-            name = self.lstCategories.Items[i]
-            if self.lstCategories.GetItemChecked(i) and name in self.category_mapping:
-                self.settings.selected_categories.append(self.category_mapping[name])
+        
+        # Собираем из списка 3D
+        for i in range(self.lstCategories3D.Items.Count):
+            name = self.lstCategories3D.Items[i]
+            if self.lstCategories3D.GetItemChecked(i) and name in self.category_mapping:
+                cat = self.category_mapping[name]
+                if cat not in self.settings.selected_categories:
+                    self.settings.selected_categories.append(cat)
+        
+        # Собираем из списка планов
+        for i in range(self.lstCategoriesPlan.Items.Count):
+            name = self.lstCategoriesPlan.Items[i]
+            if self.lstCategoriesPlan.GetItemChecked(i) and name in self.category_mapping:
+                cat = self.category_mapping[name]
+                if cat not in self.settings.selected_categories:
+                    self.settings.selected_categories.append(cat)
 
         if not self.settings.selected_categories:
             MessageBox.Show("Выберите хотя бы одну категорию!")
             return
 
-        self.PopulateTagFamilies()
+        # Заполняем обе таблицы
+        self.PopulateTagFamilies3D()
+        self.PopulateTagFamiliesPlan()
+
         self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 2
         self.tabControl.Selecting += self.OnTabSelecting
@@ -568,6 +735,7 @@ class MainForm(Form):
             else TagOrientation.Vertical
         )
         self.settings.use_leader = self.chkUseLeader.Checked
+        self.settings.random_offset = self.chkRandomOffset.Checked
         self.txtSummary.Text = self.GenerateSummary()
         self.tabControl.Selecting -= self.OnTabSelecting
         self.tabControl.SelectedIndex = 4
@@ -601,7 +769,7 @@ class MainForm(Form):
 
     def CollectCategories(self):
         """
-        Собирает категории элементов для маркировки.
+        Собирает категории элементов для маркировки и заполняет оба списка (3D и Планы).
         """
         categories = [
             BuiltInCategory.OST_DuctCurves,
@@ -622,14 +790,19 @@ class MainForm(Form):
                 self.logger.add("Ошибка получения категории {0}: {1}".format(cat, e))
 
         self.settings.selected_categories = list(unique_cats)
-        self.lstCategories.Items.Clear()
+        
+        # Заполняем оба списка одинаковыми категориями
+        self.lstCategories3D.Items.Clear()
+        self.lstCategoriesPlan.Items.Clear()
         self.category_mapping.clear()
 
         for cat in sorted(
             self.settings.selected_categories, key=lambda x: self.GetCategoryName(x)
         ):
             name = self.GetCategoryName(cat)
-            self.lstCategories.Items.Add(name, True)
+            # Добавляем в оба списка с одинаковым состоянием
+            self.lstCategories3D.Items.Add(name, True)
+            self.lstCategoriesPlan.Items.Add(name, True)
             self.category_mapping[name] = cat
 
     def GetDuctsToTag(self, duct_elements):
@@ -798,43 +971,150 @@ class MainForm(Form):
             self.logger.add("Ошибка получения имени категории: {0}".format(e))
         return getattr(category, "Name", "Неизвестная категория")
 
-    def PopulateTagFamilies(self):
-        self.lstTagFamilies.Items.Clear()
+    def PopulateTagFamilies3D(self):
+        """Заполняет список марок для 3D видов"""
+        self.lstTagFamilies3D.Items.Clear()
+        
         for category in self.settings.selected_categories:
             item = ListViewItem(self.GetCategoryName(category))
             item.Tag = category
 
-            # Попытаться найти сохраненную марку
             cat_name = self.GetCategoryName(category)
-            default = self.tag_defaults.get(cat_name, {})
-            family_name = default.get("family")
-            type_name = default.get("type")
+            family_name, type_name = self.GetSavedTagForCurrentView(cat_name, "3D")
 
             if family_name and type_name:
-                # Найти семейство и тип по имени
                 tag_family, tag_type = self.FindSavedTag(family_name, type_name)
                 if tag_family and tag_type:
                     item.SubItems.Add(self.GetElementName(tag_family))
                     item.SubItems.Add(self.GetElementName(tag_type))
-                    self.settings.category_tag_families[category] = tag_family
-                    self.settings.category_tag_types[category] = tag_type
-                    self.lstTagFamilies.Items.Add(item)
+                    self.settings.category_tag_families_3d[category] = tag_family
+                    self.settings.category_tag_types_3d[category] = tag_type
+                    self.lstTagFamilies3D.Items.Add(item)
                     continue
 
-            # Если не найдено, найти дефолтное
             tag_family, tag_type = self.FindTagForCategory(category)
-
             if tag_family and tag_type:
                 item.SubItems.Add(self.GetElementName(tag_family))
                 item.SubItems.Add(self.GetElementName(tag_type))
-                # Сохранить в settings
-                self.settings.category_tag_families[category] = tag_family
-                self.settings.category_tag_types[category] = tag_type
+                self.settings.category_tag_families_3d[category] = tag_family
+                self.settings.category_tag_types_3d[category] = tag_type
             else:
                 item.SubItems.Add("Нет подходящих марок")
                 item.SubItems.Add("")
 
-            self.lstTagFamilies.Items.Add(item)
+            self.lstTagFamilies3D.Items.Add(item)
+
+    def PopulateTagFamiliesPlan(self):
+        """Заполняет список марок для планов этажей"""
+        self.lstTagFamiliesPlan.Items.Clear()
+        
+        for category in self.settings.selected_categories:
+            item = ListViewItem(self.GetCategoryName(category))
+            item.Tag = category
+
+            cat_name = self.GetCategoryName(category)
+            family_name, type_name = self.GetSavedTagForCurrentView(cat_name, "План")
+
+            if family_name and type_name:
+                tag_family, tag_type = self.FindSavedTag(family_name, type_name)
+                if tag_family and tag_type:
+                    item.SubItems.Add(self.GetElementName(tag_family))
+                    item.SubItems.Add(self.GetElementName(tag_type))
+                    self.settings.category_tag_families_plan[category] = tag_family
+                    self.settings.category_tag_types_plan[category] = tag_type
+                    self.lstTagFamiliesPlan.Items.Add(item)
+                    continue
+
+            tag_family, tag_type = self.FindTagForCategory(category)
+            if tag_family and tag_type:
+                item.SubItems.Add(self.GetElementName(tag_family))
+                item.SubItems.Add(self.GetElementName(tag_type))
+                self.settings.category_tag_families_plan[category] = tag_family
+                self.settings.category_tag_types_plan[category] = tag_type
+            else:
+                item.SubItems.Add("Нет подходящих марок")
+                item.SubItems.Add("")
+
+            self.lstTagFamiliesPlan.Items.Add(item)
+
+    def GetSavedTagForCurrentView(self, cat_name, view_type):
+        """Получает сохранённую марку для указанного типа вида"""
+        defaults = self.tag_defaults.get(cat_name, {})
+        if view_type == "3D":
+            family_name = defaults.get("family_3d")
+            type_name = defaults.get("type_3d")
+        else:
+            family_name = defaults.get("family_plan")
+            type_name = defaults.get("type_plan")
+        return family_name, type_name
+
+    def SaveTagForCurrentView(self, cat_name, view_type, family_name, type_name):
+        """Сохраняет марку для указанного типа вида"""
+        if cat_name not in self.tag_defaults:
+            self.tag_defaults[cat_name] = {}
+        if view_type == "3D":
+            self.tag_defaults[cat_name]["family_3d"] = family_name
+            self.tag_defaults[cat_name]["type_3d"] = type_name
+        else:
+            self.tag_defaults[cat_name]["family_plan"] = family_name
+            self.tag_defaults[cat_name]["type_plan"] = type_name
+        self.logger.add("Сохранение настроек для '{0}' ({1}): {2} - {3}".format(
+            cat_name, view_type, family_name, type_name))
+        self.SaveTagDefaults()
+
+    def OnTagFamilyDoubleClick3D(self, sender, args):
+        """Обработчик двойного клика по таблице 3D"""
+        if self.lstTagFamilies3D.SelectedItems.Count == 0:
+            return
+        selected = self.lstTagFamilies3D.SelectedItems[0]
+        category = selected.Tag
+        self.OpenTagSelectionDialog(selected, category, "3D")
+
+    def OnTagFamilyDoubleClickPlan(self, sender, args):
+        """Обработчик двойного клика по таблице Планов"""
+        if self.lstTagFamiliesPlan.SelectedItems.Count == 0:
+            return
+        selected = self.lstTagFamiliesPlan.SelectedItems[0]
+        category = selected.Tag
+        self.OpenTagSelectionDialog(selected, category, "План")
+
+    def OpenTagSelectionDialog(self, selected_item, category, view_type):
+        """Открывает диалог выбора марки"""
+        available_families = self.GetAvailableTagFamiliesForCategory(category)
+
+        if available_families:
+            if view_type == "3D":
+                current_family = self.settings.category_tag_families_3d.get(category)
+                current_type = self.settings.category_tag_types_3d.get(category)
+            else:
+                current_family = self.settings.category_tag_families_plan.get(category)
+                current_type = self.settings.category_tag_types_plan.get(category)
+
+            form = TagFamilySelectionForm(
+                self.doc, available_families, current_family, current_type
+            )
+            if (
+                form.ShowDialog() == DialogResult.OK
+                and form.SelectedFamily
+                and form.SelectedType
+            ):
+                selected_item.SubItems[1].Text = self.GetElementName(form.SelectedFamily)
+                selected_item.SubItems[2].Text = self.GetElementName(form.SelectedType)
+                
+                cat_name = self.GetCategoryName(category)
+                family_name = self.GetElementName(form.SelectedFamily)
+                type_name = self.GetElementName(form.SelectedType)
+                
+                if view_type == "3D":
+                    self.settings.category_tag_families_3d[category] = form.SelectedFamily
+                    self.settings.category_tag_types_3d[category] = form.SelectedType
+                else:
+                    self.settings.category_tag_families_plan[category] = form.SelectedFamily
+                    self.settings.category_tag_types_plan[category] = form.SelectedType
+                
+                self.SaveTagForCurrentView(cat_name, view_type, family_name, type_name)
+        else:
+            MessageBox.Show("Нет доступных семейств марок для этой категории")
 
     def FindTagForCategory(self, category):
         tag_category_id = self.GetTagCategoryId(category)
@@ -941,33 +1221,6 @@ class MainForm(Form):
 
         return "Элемент " + str(element.Id.IntegerValue)
 
-    def OnTagFamilyDoubleClick(self, sender, args):
-        if self.lstTagFamilies.SelectedItems.Count == 0:
-            return
-        selected = self.lstTagFamilies.SelectedItems[0]
-        category = selected.Tag
-
-        available_families = self.GetAvailableTagFamiliesForCategory(category)
-
-        if available_families:
-            current_family = self.settings.category_tag_families.get(category)
-            current_type = self.settings.category_tag_types.get(category)
-
-            form = TagFamilySelectionForm(
-                self.doc, available_families, current_family, current_type
-            )
-            if (
-                form.ShowDialog() == DialogResult.OK
-                and form.SelectedFamily
-                and form.SelectedType
-            ):
-                selected.SubItems[1].Text = self.GetElementName(form.SelectedFamily)
-                selected.SubItems[2].Text = self.GetElementName(form.SelectedType)
-                self.settings.category_tag_families[category] = form.SelectedFamily
-                self.settings.category_tag_types[category] = form.SelectedType
-        else:
-            MessageBox.Show("Нет доступных семейств марок для этой категории")
-
     def GetAvailableTagFamiliesForCategory(self, category):
         tag_category_id = self.GetTagCategoryId(category)
         if not tag_category_id:
@@ -992,7 +1245,14 @@ class MainForm(Form):
 
     def GenerateSummary(self):
         summary = "СВОДКА ПЕРЕД ВЫПОЛНЕНИЕМ:\r\n\r\n"
+
+        # Подсчёт типов видов
+        views_3d_count = sum(1 for v in self.settings.selected_views if isinstance(v, View3D))
+        views_plan_count = sum(1 for v in self.settings.selected_views if isinstance(v, ViewPlan))
+
         summary += "Выбрано видов: " + str(len(self.settings.selected_views)) + "\r\n"
+        summary += "  - 3D виды: " + str(views_3d_count) + "\r\n"
+        summary += "  - Планы: " + str(views_plan_count) + "\r\n"
         summary += (
             "Выбрано категорий: " + str(len(self.settings.selected_categories)) + "\r\n"
         )
@@ -1004,6 +1264,7 @@ class MainForm(Form):
         )
         summary += "Ориентация: " + orientation_text + "\r\n"
         summary += "Выноска: " + ("Да" if self.settings.use_leader else "Нет") + "\r\n"
+        summary += "Случайное смещение: " + ("Да" if self.settings.random_offset else "Нет") + "\r\n"
         summary += (
             "Логирование: "
             + ("Включено" if self.settings.enable_logging else "Отключено")
@@ -1012,18 +1273,27 @@ class MainForm(Form):
 
         summary += "Детали по категориям:\r\n"
         for category in self.settings.selected_categories:
-            tag_family = self.settings.category_tag_families.get(category)
-            tag_type = self.settings.category_tag_types.get(category)
-            if tag_family and tag_type:
-                status = (
-                    self.GetElementName(tag_family)
-                    + " ("
-                    + self.GetElementName(tag_type)
-                    + ")"
-                )
+            # Для 3D
+            tag_family_3d = self.settings.category_tag_families_3d.get(category)
+            tag_type_3d = self.settings.category_tag_types_3d.get(category)
+            if tag_family_3d and tag_type_3d:
+                status_3d = self.GetElementName(tag_type_3d)
             else:
-                status = "НЕТ МАРКИ"
-            summary += "- " + self.GetCategoryName(category) + ": " + status + "\r\n"
+                status_3d = "НЕТ МАРКИ"
+
+            # Для планов
+            tag_family_plan = self.settings.category_tag_families_plan.get(category)
+            tag_type_plan = self.settings.category_tag_types_plan.get(category)
+            if tag_family_plan and tag_type_plan:
+                status_plan = self.GetElementName(tag_type_plan)
+            else:
+                status_plan = "НЕТ МАРКИ"
+
+            cat_name = self.GetCategoryName(category)
+            summary += "- " + cat_name + ":\r\n"
+            summary += "    3D: " + status_3d + "\r\n"
+            summary += "    План: " + status_plan + "\r\n"
+
         return summary
 
     def OnExecuteClick(self, sender, args):
@@ -1032,24 +1302,27 @@ class MainForm(Form):
         """
         success_count = 0
         errors = []
-        
+
         self.logger.add("Начало выполнения расстановки марок.")
-        
+        self.logger.add("Выбрано видов: {0}".format(len(self.settings.selected_views)))
+
         trans = Transaction(self.doc, "Расстановка марок")
         trans.Start()
         try:
             # 1. Собираем элементы по видам и категориям
             elements_by_view_and_category = {}
             for view in self.settings.selected_views:
-                if not isinstance(view, View3D):
-                    error_msg = "Вид '{0}' не 3D, пропущен".format(view.Name)
+                # Проверяем тип вида - поддерживаем 3D и Планы
+                if not isinstance(view, (View3D, ViewPlan)):
+                    error_msg = "Вид '{0}' не поддерживается (требуется 3D или План), пропущен".format(view.Name)
                     errors.append(error_msg)
                     self.logger.add(error_msg)
                     continue
-                    
-                self.logger.add("Обработка вида: {0}".format(view.Name))
+
+                view_type = "3D" if isinstance(view, View3D) else "План"
+                self.logger.add("Обработка вида: {0} [{1}]".format(view.Name, view_type))
                 elements_by_view_and_category[view.Id] = {}
-                
+
                 for category in self.settings.selected_categories:
                     elements = list(
                         FilteredElementCollector(self.doc, view.Id)
@@ -1067,11 +1340,11 @@ class MainForm(Form):
             # 2. Применяем фильтрацию для воздуховодов (если нужно)
             # Сначала собираем все элементы для прогресса
             all_elements_for_progress = []
-            
+
             for view in self.settings.selected_views:
-                if not isinstance(view, View3D):
+                if not isinstance(view, (View3D, ViewPlan)):
                     continue
-                    
+
                 for category in self.settings.selected_categories:
                     elements = elements_by_view_and_category[view.Id][category.Id]
 
@@ -1084,7 +1357,7 @@ class MainForm(Form):
                                 self.GetCategoryName(category), len(elements)
                             )
                         )
-                    
+
                     # Обновляем элементы в кэше
                     elements_by_view_and_category[view.Id][category.Id] = elements
                     # Добавляем в общий список для прогресса
@@ -1093,32 +1366,30 @@ class MainForm(Form):
             # 3. Настраиваем прогресс-бар на РЕАЛЬНОЕ количество операций
             total_operations = len(all_elements_for_progress)
             self.logger.add("Всего операций после фильтрации: {0}".format(total_operations))
-            
+
             if total_operations == 0:
                 self.progressBar.Maximum = 1
             else:
                 self.progressBar.Maximum = total_operations
-                
+
             self.progressBar.Value = 0
             
             # 4. Основной цикл расстановки марок
             processed_count = 0
-            
+
             for view in self.settings.selected_views:
-                if not isinstance(view, View3D):
+                # Пропускаем неподдерживаемые типы видов
+                if not isinstance(view, (View3D, ViewPlan)):
                     continue
-                    
+
+                view_type = "3D" if isinstance(view, View3D) else "План"
+                self.logger.add("  [Вид] {0} [{1}]".format(view.Name, view_type))
+
                 for category in self.settings.selected_categories:
                     elements = elements_by_view_and_category[view.Id][category.Id]
-                    tag_type = self.settings.category_tag_types.get(category)
 
-                    if not tag_type:
-                        error_msg = "Нет марки для категории '{0}'".format(
-                            self.GetCategoryName(category)
-                        )
-                        errors.append(error_msg)
-                        self.logger.add(error_msg)
-                        continue
+                    self.logger.add("    [{0}] Обработка {1} элементов...".format(
+                        self.GetCategoryName(category), len(elements)))
 
                     for element in elements:
                         # Обновляем прогресс перед каждой операцией
@@ -1126,31 +1397,26 @@ class MainForm(Form):
                         self.progressBar.Value = min(
                             processed_count, self.progressBar.Maximum
                         )
-                        
+
                         # Обновляем UI для плавного отображения прогресса
                         Application.DoEvents()
-                        
+
                         if self.HasExistingTag(element, view):
                             self.logger.add(
-                                "Элемент {0} уже имеет марку на виде {1}, пропущен".format(
-                                    element.Id, view.Name
+                                "  ⊘ Элемент {0} уже имеет марку, пропущен".format(
+                                    element.Id
                                 )
                             )
                             continue
-                            
-                        if self.CreateTag(element, view, tag_type):
+
+                        if self.CreateTag(element, view, category):
                             success_count += 1
-                            self.logger.add(
-                                "Марка создана для элемента {0} на виде {1}".format(
-                                    element.Id, view.Name
-                                )
-                            )
                         else:
-                            error_msg = "Не удалось создать марку для элемента {0} на виде {1}".format(
-                                element.Id, view.Name
+                            error_msg = "Не удалось создать марку для элемента {0}".format(
+                                element.Id
                             )
                             errors.append(error_msg)
-                            self.logger.add(error_msg)
+                            self.logger.add("  ✗ {0}".format(error_msg))
 
             trans.Commit()
             self.logger.add("Транзакция подтверждена успешно")
@@ -1183,37 +1449,138 @@ class MainForm(Form):
             self.logger.show()
         self.Close()
 
-    def CreateTag(self, element, view, tag_type):
+    def CreateTag(self, element, view, category):
         """
         Создает марку для указанного элемента на виде.
 
         Args:
             element (Element): Элемент для марки.
-            view (View3D): 3D-вид.
-            tag_type (FamilySymbol): Тип марки.
+            view (View): Вид (3D или План).
+            category (Category): Категория элемента.
 
         Returns:
             bool: True, если марка создана успешно.
         """
         try:
+            # Получаем тип марки для текущего вида
+            if isinstance(view, View3D):
+                tag_type = self.settings.category_tag_types_3d.get(category)
+                view_type_name = "3D"
+            else:
+                tag_type = self.settings.category_tag_types_plan.get(category)
+                view_type_name = "План"
+            
+            if not tag_type:
+                self.logger.add("  ⚠️ Тип марки не выбран для категории '{}' ({} вид)".format(
+                    self.GetCategoryName(category), view_type_name))
+                return False
+
+            # Проверяем bounding box
             bbox = element.get_BoundingBox(view)
             if not bbox or not bbox.Min or not bbox.Max:
+                self.logger.add("  ⚠️ Элемент ID {} не имеет bounding box на виде {}".format(
+                    element.Id.IntegerValue, view.Name))
                 return False
 
             center = (bbox.Min + bbox.Max) / 2
             scale_factor = 100.0 / view.Scale
 
+            self.logger.add("  -> Элемент ID {}: центр=({}, {}), масштаб={}".format(
+                element.Id.IntegerValue,
+                round(center.X, 2),
+                round(center.Y, 2),
+                round(view.Scale, 1)))
+
+            # Информация о типе марки
+            if tag_type:
+                try:
+                    tag_info = "ID={}, Class={}".format(
+                        tag_type.Id.IntegerValue,
+                        tag_type.__class__.__name__)
+                    self.logger.add("  -> Тип марки ({}): {}".format(view_type_name, tag_info))
+                except:
+                    self.logger.add("  -> Тип марки: ID={}".format(tag_type.Id.IntegerValue))
+            else:
+                self.logger.add("  -> Тип марки: НЕ УКАЗАН")
+
             offset_x = (self.settings.offset_x * scale_factor) / MM_TO_FEET
             offset_y = (self.settings.offset_y * scale_factor) / MM_TO_FEET
 
-            direction_x = 1 if element.Id.IntegerValue % 2 == 0 else -1
-            direction_y = 1 if element.Id.IntegerValue % 3 == 0 else -1
+            # Для 3D видов - случайное направление, для планов - только XY
+            if isinstance(view, View3D):
+                # 3D вид - случайное направление по всем осям
+                if self.settings.random_offset:
+                    direction_x = random.choice([-1, 1])
+                    direction_y = random.choice([-1, 1])
+                    direction_z = random.choice([-1, 1])
+                else:
+                    direction_x = 1 if element.Id.IntegerValue % 2 == 0 else -1
+                    direction_y = 1 if element.Id.IntegerValue % 3 == 0 else -1
+                    direction_z = 1 if element.Id.IntegerValue % 5 == 0 else -1
 
-            tag_point = XYZ(
-                center.X + offset_x * direction_x,
-                center.Y + offset_y * direction_y,
-                center.Z,
-            )
+                tag_point = XYZ(
+                    center.X + offset_x * direction_x,
+                    center.Y + offset_y * direction_y,
+                    center.Z + offset_x * 0.5 * direction_z,  # Меньшее смещение по Z
+                )
+            else:
+                # План этажа - смещение только по XY
+                if self.settings.random_offset:
+                    direction_x = random.choice([-1, 1])
+                    direction_y = random.choice([-1, 1])
+                else:
+                    direction_x = 1 if element.Id.IntegerValue % 2 == 0 else -1
+                    direction_y = 1 if element.Id.IntegerValue % 3 == 0 else -1
+
+                tag_point = XYZ(
+                    center.X + offset_x * direction_x,
+                    center.Y + offset_y * direction_y,
+                    center.Z,
+                )
+
+            self.logger.add("  -> Точка для марки: ({}, {}, {})".format(
+                round(tag_point.X, 2),
+                round(tag_point.Y, 2),
+                round(tag_point.Z, 2)))
+
+            # Проверяем тип марки
+            if not tag_type:
+                self.logger.add("  ⚠️ Тип марки не указан!")
+                return False
+
+            # Получаем имя типа марки для логирования (с обработкой ошибок)
+            tag_type_name = None
+            try:
+                # Пытаемся получить имя через параметр
+                name_param = tag_type.LookupParameter("Тип")
+                if name_param and name_param.HasValue:
+                    tag_type_name = name_param.AsString()
+                
+                if not tag_type_name:
+                    name_param = tag_type.LookupParameter("Type Name")
+                    if name_param and name_param.HasValue:
+                        tag_type_name = name_param.AsString()
+                
+                if not tag_type_name:
+                    # Пробуем прямое свойство
+                    tag_type_name = str(tag_type.Name) if tag_type.Name else None
+                    
+            except:
+                pass
+            
+            # Если не удалось получить имя, используем ID
+            if not tag_type_name:
+                tag_type_name = "ID_{}".format(tag_type.Id.IntegerValue)
+
+            # Проверяем и активируем типоразмер если нужно
+            if not tag_type.IsActive:
+                self.logger.add("  ⚠️ Тип марки '{}' не активен, активирую...".format(tag_type_name))
+                try:
+                    tag_type.Activate()
+                    self.logger.add("  ✓ Тип марки '{}' активирован".format(tag_type_name))
+                except Exception as e:
+                    self.logger.add("  ⚠️ Не удалось активировать тип '{}': {}".format(tag_type_name, e))
+                    # Продолжаем, возможно марка создастся с типом по умолчанию
 
             tag = IndependentTag.Create(
                 self.doc,
@@ -1225,16 +1592,26 @@ class MainForm(Form):
                 tag_point,
             )
 
-            if tag and tag_type:
+            if tag:
+                self.logger.add("  ✓ Марка создана для элемента ID {}".format(element.Id.IntegerValue))
+
+                # Примечание: Тип конца выноски (Leader End) нельзя изменить программно
+                # Это настройка семейства марки, которая задаётся в редакторе семейств Revit
+
+                # Пытаемся установить нужный типоразмер
                 try:
                     tag.ChangeTypeId(tag_type.Id)
-                except RevitException as e:
-                    self.logger.add("Не удалось изменить тип марки: {0}".format(e))
-                    return False
+                    self.logger.add("  ✓ Тип марки изменён на '{}'".format(tag_type_name))
+                except Exception as e:
+                    self.logger.add("  ⚠️ Не удалось изменить тип марки на '{}': {}".format(tag_type_name, e))
+                    self.logger.add("     Примечание: марка создана с типом по умолчанию")
                 return True
-            return False
+            else:
+                self.logger.add("  ⚠️ IndependentTag.Create вернул None")
+                return False
+
         except Exception as e:
-            self.logger.add("Ошибка создания марки: {0}".format(e))
+            self.logger.add("  ⚠️ Exception при создании марки: {0}".format(e))
             return False
 
     def HasExistingTag(self, element, view):
@@ -1243,7 +1620,7 @@ class MainForm(Form):
 
         Args:
             element (Element): Элемент.
-            view (View3D): 3D-вид.
+            view (View): Вид (3D или План).
 
         Returns:
             bool: True, если марка существует.
@@ -1286,29 +1663,57 @@ class MainForm(Form):
         config_path = self.GetConfigPath()
         if os.path.exists(config_path):
             try:
-                with open(config_path, "r") as f:
-                    return json.load(f)
+                # Используем codecs для совместимости с IronPython 2.7
+                with codecs.open(config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.logger.add("Настройки марок загружены из: {}".format(config_path))
+                    return data
             except Exception as e:
                 self.logger.add("Ошибка загрузки настроек марок: {0}".format(e))
+        else:
+            self.logger.add("Файл настроек не найден: {}".format(config_path))
         return {}
 
     def SaveTagDefaults(self):
         """
-        Сохраняет выбранные марки в файл.
+        Сохраняет выбранные марки в файл (и для 3D, и для планов).
         """
         defaults = {}
-        for cat, family in self.settings.category_tag_families.items():
+
+        # Сохраняем настройки для 3D видов
+        for cat, family in self.settings.category_tag_families_3d.items():
             cat_name = self.GetCategoryName(cat)
+            if cat_name not in defaults:
+                defaults[cat_name] = {}
+
             family_name = self.GetElementName(family)
-            type_elem = self.settings.category_tag_types.get(cat)
+            type_elem = self.settings.category_tag_types_3d.get(cat)
             type_name = self.GetElementName(type_elem) if type_elem else ""
+
             if family_name and type_name:
-                defaults[cat_name] = {"family": family_name, "type": type_name}
+                defaults[cat_name]["family_3d"] = family_name
+                defaults[cat_name]["type_3d"] = type_name
+
+        # Сохраняем настройки для планов
+        for cat, family in self.settings.category_tag_families_plan.items():
+            cat_name = self.GetCategoryName(cat)
+            if cat_name not in defaults:
+                defaults[cat_name] = {}
+
+            family_name = self.GetElementName(family)
+            type_elem = self.settings.category_tag_types_plan.get(cat)
+            type_name = self.GetElementName(type_elem) if type_elem else ""
+
+            if family_name and type_name:
+                defaults[cat_name]["family_plan"] = family_name
+                defaults[cat_name]["type_plan"] = type_name
 
         config_path = self.GetConfigPath()
         try:
-            with open(config_path, "w") as f:
-                json.dump(defaults, f, ensure_ascii=True, indent=4)
+            # Используем codecs для совместимости с IronPython 2.7
+            with codecs.open(config_path, "w", encoding="utf-8") as f:
+                json.dump(defaults, f, ensure_ascii=False, indent=4)
+            self.logger.add("Настройки марок сохранены в: {}".format(config_path))
         except Exception as e:
             self.logger.add("Ошибка сохранения настроек марок: {0}".format(e))
 
