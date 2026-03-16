@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 __title__ = 'isolyshka'
 __author__ = 'Rage'
-__doc__ = 'Вывод отчета наличия изоляции систем воздуховодов'
+__doc__ = 'Вывод отчета наличия изоляции систем воздуховодов на текущемм виде'
 
 from pyrevit import forms, output, script
 from Autodesk.Revit.UI import TaskDialog, TaskDialogResult, TaskDialogCommonButtons
