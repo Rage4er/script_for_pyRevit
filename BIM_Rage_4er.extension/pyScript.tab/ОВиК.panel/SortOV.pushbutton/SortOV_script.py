@@ -15,15 +15,16 @@ from Autodesk.Revit.DB import *
 doc = __revit__.ActiveUIDocument.Document
 
 def extract_prefix_and_number(system_name):
-    """Извлекает префикс и число из имени системы"""
+    """Извлекает префикс и ВСЕ числа из имени системы"""
     sort_order = ['ПЕ', 'ВЕ', 'ДПЕ', 'ДВЕ', 'П', 'В', 'ДП', 'ДВ', 'А', 'У']
     system_name_upper = system_name.upper()
     
     for prefix in sorted(sort_order, key=len, reverse=True):
         if system_name_upper.startswith(prefix.upper()):
             numbers = re.findall(r'\d+', system_name[len(prefix):])
-            return prefix, int(numbers[0]) if numbers else 0
-    return "", 0
+            # Возвращаем кортеж ВСЕХ чисел
+            return prefix, tuple(int(n) for n in numbers) if numbers else (0,)
+    return "", (0,)
 
 def main():
     """Основная функция выполнения"""
@@ -48,9 +49,9 @@ def main():
     
     def get_sort_key(system):
         name_param = system.LookupParameter("Имя системы")
-        if not name_param: return (len(sort_order) + 1, 0)
-        prefix, number = extract_prefix_and_number(name_param.AsString() or "")
-        return (sort_order.index(prefix) if prefix in sort_order else len(sort_order), number)
+        if not name_param: return (len(sort_order) + 1, (0,))
+        prefix, numbers = extract_prefix_and_number(name_param.AsString() or "")
+        return (sort_order.index(prefix) if prefix in sort_order else len(sort_order), numbers)
     
     sorted_systems = sorted(systems, key=get_sort_key)
 
