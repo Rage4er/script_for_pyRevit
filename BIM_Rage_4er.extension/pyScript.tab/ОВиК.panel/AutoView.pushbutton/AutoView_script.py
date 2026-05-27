@@ -323,6 +323,28 @@ def create_sheet(template_sheet):
                 except:
                     pass
     
+    # Копирование параметра листа "ADSK_Штамп Раздел Проекта"
+    param_name = "ADSK_Штамп Раздел Проекта"
+    p_template = template_sheet.LookupParameter(param_name)
+    p_new = new_sheet.LookupParameter(param_name)
+    
+    if p_template and p_template.HasValue and p_new and not p_new.IsReadOnly:
+        try:
+            if p_template.StorageType == StorageType.String:
+                value = p_template.AsString()
+                p_new.Set(value)
+                print("  ✅ Скопирован параметр листа '{}': {}".format(param_name, value))
+            elif p_template.StorageType == StorageType.Integer:
+                p_new.Set(p_template.AsInteger())
+            elif p_template.StorageType == StorageType.Double:
+                p_new.Set(p_template.AsDouble())
+            elif p_template.StorageType == StorageType.ElementId:
+                val = p_template.AsElementId()
+                if val and val != ElementId.InvalidElementId:
+                    p_new.Set(val)
+        except Exception as e:
+            print("  ⚠️ Ошибка при копировании параметра '{}': {}".format(param_name, e))
+    
     return new_sheet
 
 
@@ -1894,12 +1916,13 @@ def main():
                     clear_sheet_viewports(new_sheet)
                     
                     left_x = mx + max(0, (avail_w - vw) // 2)
-                    left_y = my + max(0, (avail_h - vh) // 2)
-                    # Левый нижний угол (Revit использует левый нижний угол для Viewport)
-                    # left_x, left_y - координаты от левого нижнего угла рамки после нормализации
+                    left_y = stamp_height + max(0, (avail_h - vh) // 2)
+                    # Viewport.Create ожидает координаты ЦЕНТРА видового экрана
+                    center_x = left_x + vw / 2.0
+                    center_y = left_y + vh / 2.0
                     # frame_min_x, frame_min_y - положение рамки в системе Revit
-                    x_mm = frame_min_x + left_x  # без shift_x!
-                    y_mm = frame_min_y + left_y  # без shift_y!
+                    x_mm = frame_min_x + center_x
+                    y_mm = frame_min_y + center_y
                     
                     # Отладочная информация о размещении
                     print("  📐 Размещение негабаритного вида:")
@@ -1945,12 +1968,13 @@ def main():
                         clear_sheet_viewports(new_sheet)
                         
                         left_x = mx + max(0, (avail_w - vw) // 2)
-                        left_y = my + max(0, (avail_h - vh) // 2)
-                        # Левый нижний угол (Revit использует левый нижний угол для Viewport)
-                        # left_x, left_y - координаты от левого нижнего угла рамки после нормализации
+                        left_y = stamp_height + max(0, (avail_h - vh) // 2)
+                        # Viewport.Create ожидает координаты ЦЕНТРА видового экрана
+                        center_x = left_x + vw / 2.0
+                        center_y = left_y + vh / 2.0
                         # frame_min_x, frame_min_y - положение рамки в системе Revit
-                        x_mm = frame_min_x + left_x  # без shift_x!
-                        y_mm = frame_min_y + left_y  # без shift_y!
+                        x_mm = frame_min_x + center_x
+                        y_mm = frame_min_y + center_y
                         
                         # Отладочная информация о размещении
                         print("  📐 Размещение одиночного вида (упаковщик не справился):")
@@ -2000,12 +2024,13 @@ def main():
                     vw, vh = view_sizes[vid]
                     
                     left_x = mx + x
-                    left_y = my + y
-                    # Левый нижний угол (Revit использует левый нижний угол для Viewport)
-                    # left_x, left_y - координаты от левого нижнего угла рамки после нормализации
+                    left_y = stamp_height + y
+                    # Viewport.Create ожидает координаты ЦЕНТРА видового экрана
+                    center_x = left_x + vw / 2.0
+                    center_y = left_y + vh / 2.0
                     # frame_min_x, frame_min_y - положение рамки в системе Revit
-                    x_mm = frame_min_x + left_x  # без shift_x!
-                    y_mm = frame_min_y + left_y  # без shift_y!
+                    x_mm = frame_min_x + center_x
+                    y_mm = frame_min_y + center_y
                     
                     # Отладочная информация для каждого вида
                     print("     Вид {}: {}".format(idx, get_view_short_name(view.Name)))
