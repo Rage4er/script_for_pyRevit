@@ -3,7 +3,8 @@
 __title__ = """Размещение
 видов на листы"""
 __author__ = 'Rage'
-__doc__ = """Размещает 3D виды на листы по системам с оптимальным заполнением"""
+__doc__ = """Размещает 3D виды на листы по системам с оптимальным заполнением.
+Выбираем лист для образца основной надписи, запускаем скрипт."""
 __version__ = "6.0"
 
 import clr
@@ -21,7 +22,8 @@ import System
 from System.Windows.Forms import (
     Form, FormStartPosition, FormBorderStyle,
     DialogResult, MessageBox, Panel, BorderStyle,
-    CheckBox, Button, Label, TextBox, GroupBox
+    CheckBox, Button, Label, TextBox, GroupBox, ComboBox,
+    ComboBoxStyle
 )
 from System.Drawing import (
     Font, FontStyle,
@@ -59,18 +61,22 @@ app = doc.Application
 
 # ============ НАСТРОЙКИ ============
 
-GROUPING = OrderedDict([
+# Настройки групп по умолчанию
+DEFAULT_GROUPING = OrderedDict([
     ("П-В",     ["П", "ПЕ", "В", "ВЕ"]),
     ("ДП-ДВ",   ["ДП", "ДПЕ", "ДВ", "ДВЕ"]),
     ("А-У",     ["А", "У"]),
 ])
 
+GROUPING = OrderedDict(DEFAULT_GROUPING)  # текущая группировка (может меняться пользователем)
+
 ALL_PREFIXES = ['ПЕ', 'ВЕ', 'ДПЕ', 'ДВЕ', 'П', 'В', 'ДП', 'ДВ', 'А', 'У']
+GROUP_NAMES_DEFAULT = ["П-В", "ДП-ДВ", "А-У", "", ""]
 
 EXPORT_PIXELS = 1000
 PADDING_MM = 5
-STAMP_WIDTH_MM = 100  # ширина штампа (правая часть листа)
-STAMP_HEIGHT_MM = 50  # высота штампа (нижняя часть листа)
+STAMP_WIDTH_MM = 185  # ширина штампа (правая часть листа)
+STAMP_HEIGHT_MM = 55  # высота штампа (нижняя часть листа)
 CALIBRATION_SQUARE_MM = 5.0  # квадраты 5×5 мм вместо 100×100 мм (почти невидимые)
 SQUARE_LINE_STEP_MM = 0.5
 SQUARE_LINE_COUNT = 1
@@ -109,27 +115,71 @@ def get_view_short_name(view_name):
 
 
 def extract_prefix_and_numbers(view_name):
+    """
+    Извлекает префикс системы и числа из имени вида.
+    Префикс ищется ТОЛЬКО после разделителей или в начале имени.
+    После префикса ОБЯЗАТЕЛЬНО должна идти цифра (индекс).
+    Максимальная длина префикса — 3 символа.
+    Примеры:
+      "Схема_Возд_П1.2" → ("П", (1, 2))
+      "В_3D_вент" → ("", (3,))  # после В идёт "_", а не цифра
+      "тест_В1.11.2 копия 1" → ("В", (1, 11, 2))
+      "тест копия 1" → ("", (1,))  # нет префикса
+    """
     if not view_name:
         return "", (0,)
+    
     name_upper = view_name.upper()
-    for prefix in sorted(ALL_PREFIXES, key=len, reverse=True):
+    
+    # Разбиваем имя на токены по разделителям
+    tokens = re.split(r'[ _\-]+', name_upper)
+    
+    # Сортируем префиксы по длине (длинные primero: ДПЕ, ДВЕ, ПЕ, ВЕ...)
+    sorted_prefixes = sorted(ALL_PREFIXES, key=len, reverse=True)
+    
+    # Ищем префикс в каждом токене
+    for token in tokens:
+        token = token.strip()
+        if not token:
+            continue
+        
+        for prefix in sorted_prefixes:
+            # Токен должен быть НЕ короче префикса
+            if len(token) <= len(prefix):
+                continue
+            
+            # Токен должен начинаться с префикса
+            if not token.startswith(prefix):
+                continue
+            
+            # После префикса ОБЯЗАТЕЛЬНО должна идти цифра
+            after = token[len(prefix):]
+            if after and after[0].isdigit():
+                numbers = re.findall(r'\d+', after)
+                if numbers:
+                    return prefix, tuple(int(n) for n in numbers)
+    
+    # Если префикс не найден в токенах — ищем во всей строке (для имён без разделителей)
+    for prefix in sorted_prefixes:
         idx = name_upper.find(prefix)
         if idx >= 0:
             after = name_upper[idx + len(prefix):]
-            numbers = re.findall(r'\d+', after)
-            if numbers:
-                return prefix, tuple(int(n) for n in numbers)
-            if idx + len(prefix) == len(name_upper):
-                return prefix, (0,)
+            if after and after[0].isdigit():
+                numbers = re.findall(r'\d+', after)
+                if numbers:
+                    return prefix, tuple(int(n) for n in numbers)
+    
+    # Если префикс не найден — возвращаем числа из имени
     numbers = re.findall(r'\d+', view_name)
     if numbers:
-        for prefix in sorted(ALL_PREFIXES, key=len, reverse=True):
-            if prefix in name_upper:
-                return prefix, tuple(int(n) for n in numbers)
-    return "", tuple(int(n) for n in numbers) if numbers else (0,)
+        return "", tuple(int(n) for n in numbers)
+    
+    return "", (0,)
 
 
 def get_group_for_prefix(prefix):
+    if not prefix:
+        return "Без системы"
     for group_name, prefixes in GROUPING.items():
         if prefix in prefixes:
             return group_name
@@ -323,27 +373,59 @@ def create_sheet(template_sheet):
                 except:
                     pass
     
-    # Копирование параметра листа "ADSK_Штамп Раздел Проекта"
-    param_name = "ADSK_Штамп Раздел Проекта"
+    # Копирование параметра листа "ADSK_Штамп Раздел проекта" (строчная "п" в "проекта")
+    param_name = "ADSK_Штамп Раздел проекта"
     p_template = template_sheet.LookupParameter(param_name)
     p_new = new_sheet.LookupParameter(param_name)
+    
+    print("  🔍 Проверка параметра листа '{}':".format(param_name))
+    
+    if p_template:
+        print("    📋 Найден на шаблоне: тип={}, HasValue={}, значение='{}'".format(
+            p_template.StorageType,
+            p_template.HasValue,
+            p_template.AsValueString() if p_template.HasValue else "нет значения"
+        ))
+    else:
+        print("    ❌ Не найден на шаблоне")
+    
+    if p_new:
+        print("    📋 Найден на новом листе: только для чтения={}".format(p_new.IsReadOnly))
+    else:
+        print("    ❌ Не найден на новом листе")
     
     if p_template and p_template.HasValue and p_new and not p_new.IsReadOnly:
         try:
             if p_template.StorageType == StorageType.String:
                 value = p_template.AsString()
                 p_new.Set(value)
-                print("  ✅ Скопирован параметр листа '{}': {}".format(param_name, value))
+                print("    ✅ Скопирован строковый параметр: '{}'".format(value))
             elif p_template.StorageType == StorageType.Integer:
-                p_new.Set(p_template.AsInteger())
+                value = p_template.AsInteger()
+                p_new.Set(value)
+                print("    ✅ Скопирован целочисленный параметр: {}".format(value))
             elif p_template.StorageType == StorageType.Double:
-                p_new.Set(p_template.AsDouble())
+                value = p_template.AsDouble()
+                p_new.Set(value)
+                print("    ✅ Скопирован вещественный параметр: {}".format(value))
             elif p_template.StorageType == StorageType.ElementId:
                 val = p_template.AsElementId()
                 if val and val != ElementId.InvalidElementId:
                     p_new.Set(val)
+                    print("    ✅ Скопирован параметр ElementId: {}".format(val))
+            else:
+                print("    ⚠️ Неизвестный тип хранения: {}".format(p_template.StorageType))
         except Exception as e:
-            print("  ⚠️ Ошибка при копировании параметра '{}': {}".format(param_name, e))
+            print("    ❌ Ошибка при копировании: {}".format(e))
+    else:
+        if not p_template:
+            print("    ⚠️ Пропускаем: параметр не найден на шаблоне")
+        elif not p_template.HasValue:
+            print("    ⚠️ Пропускаем: параметр на шаблоне не имеет значения")
+        elif not p_new:
+            print("    ⚠️ Пропускаем: параметр не найден на новом листе")
+        elif p_new.IsReadOnly:
+            print("    ⚠️ Пропускаем: параметр только для чтения на новом листе")
     
     return new_sheet
 
@@ -1452,6 +1534,207 @@ def find_best_fill(rects, bin_w, bin_h, occupied_rects=None):
     return best_placements
 
 
+# ============ ФОРМА НАСТРОЙКИ ГРУПП ============
+
+def show_group_config_form():
+    """Показывает форму настройки групп систем."""
+    form = Form()
+    form.Text = "Настройка групп систем"
+    form.Size = Size(860, 380)
+    form.StartPosition = FormStartPosition.CenterScreen
+    form.FormBorderStyle = FormBorderStyle.FixedDialog
+    form.MaximizeBox = False
+    form.MinimizeBox = False
+    
+    result = {'grouping': None}
+    
+    y = 10
+    
+    title = Label()
+    title.Text = "Настройка групп систем (каждая строка = одна группа листов)"
+    title.Location = Point(10, y)
+    title.Size = Size(830, 25)
+    title.Font = Font("Arial", 10, FontStyle.Bold)
+    form.Controls.Add(title)
+    y += 30
+    
+    # Панель с группами
+    panel = Panel()
+    panel.Location = Point(10, y)
+    panel.Size = Size(830, 220)
+    panel.BorderStyle = BorderStyle.FixedSingle
+    panel.AutoScroll = True
+    form.Controls.Add(panel)
+    
+    group_combos = []  # список списков ComboBox для каждой группы
+    group_name_boxes = []  # TextBox для названий групп
+    
+    inner_y = 10
+    for group_idx in range(5):
+        group_label = Label()
+        group_label.Text = "Группа " + str(group_idx + 1) + ":"
+        group_label.Location = Point(10, inner_y)
+        group_label.Size = Size(60, 20)
+        group_label.Font = Font("Arial", 8, FontStyle.Regular)
+        panel.Controls.Add(group_label)
+        
+        row_combos = []
+        combo_x = 75
+        for i in range(10):
+            cb = ComboBox()
+            cb.Location = Point(combo_x, inner_y)
+            cb.Size = Size(50, 20)
+            cb.Font = Font("Arial", 8)
+            cb.DropDownStyle = ComboBoxStyle.DropDownList
+            cb.Items.Add("")
+            for prefix in ALL_PREFIXES:
+                cb.Items.Add(prefix)
+            
+            # Заполняем значения по умолчанию
+            if group_idx < len(DEFAULT_GROUPING):
+                default_prefixes = list(DEFAULT_GROUPING.values())[group_idx]
+                if i < len(default_prefixes):
+                    cb.SelectedItem = default_prefixes[i]
+                else:
+                    cb.SelectedIndex = 0
+            else:
+                cb.SelectedIndex = 0
+            
+            panel.Controls.Add(cb)
+            row_combos.append(cb)
+            
+            combo_x += 50
+            if i < 9:
+                plus_label = Label()
+                plus_label.Text = "+"
+                plus_label.Location = Point(combo_x + 2, inner_y)
+                plus_label.Size = Size(10, 20)
+                plus_label.Font = Font("Arial", 8)
+                panel.Controls.Add(plus_label)
+                combo_x += 8
+        
+        group_combos.append(row_combos)
+        
+        # Название группы
+        name_label = Label()
+        name_label.Text = "Название:"
+        name_label.Location = Point(combo_x + 8, inner_y)
+        name_label.Size = Size(60, 20)
+        name_label.Font = Font("Arial", 8)
+        panel.Controls.Add(name_label)
+        
+        name_box = TextBox()
+        name_box.Location = Point(combo_x + 68, inner_y)
+        name_box.Size = Size(100, 20)
+        name_box.Font = Font("Arial", 8)
+        if group_idx < len(GROUP_NAMES_DEFAULT):
+            name_box.Text = GROUP_NAMES_DEFAULT[group_idx]
+        panel.Controls.Add(name_box)
+        group_name_boxes.append(name_box)
+        
+        inner_y += 25
+    
+    y += 230
+    
+    # Кнопки пресетов
+    presets_label = Label()
+    presets_label.Text = "Быстрые пресеты:"
+    presets_label.Location = Point(10, y)
+    presets_label.Size = Size(120, 20)
+    presets_label.Font = Font("Arial", 8, FontStyle.Bold)
+    form.Controls.Add(presets_label)
+    
+    def apply_preset(preset_name):
+        presets = {
+            "П+В, ДП+ДВ, А+У": [
+                (["П", "ПЕ", "В", "ВЕ"], "П-В"),
+                (["ДП", "ДПЕ", "ДВ", "ДВЕ"], "ДП-ДВ"),
+                (["А", "У"], "А-У"),
+                ([], ""),
+                ([], ""),
+            ],
+            "П, В, ДП+ДВ, А+У": [
+                (["П", "ПЕ"], "П"),
+                (["В", "ВЕ"], "В"),
+                (["ДП", "ДПЕ", "ДВ", "ДВЕ"], "ДП-ДВ"),
+                (["А", "У"], "А-У"),
+                ([], ""),
+            ],
+            "П, В, ДП, ДВ, А, У": [
+                (["П", "ПЕ"], "П"),
+                (["В", "ВЕ"], "В"),
+                (["ДП", "ДПЕ"], "ДП"),
+                (["ДВ", "ДВЕ"], "ДВ"),
+                (["А", "У"], "А-У"),
+            ],
+        }
+        if preset_name in presets:
+            for g_idx, (prefixes, name) in enumerate(presets[preset_name]):
+                for i in range(10):
+                    if i < len(prefixes):
+                        group_combos[g_idx][i].SelectedItem = prefixes[i]
+                    else:
+                        group_combos[g_idx][i].SelectedIndex = 0
+                group_name_boxes[g_idx].Text = name
+    
+    preset_x = 140
+    for preset_name in ["П+В, ДП+ДВ, А+У", "П, В, ДП+ДВ, А+У", "П, В, ДП, ДВ, А, У"]:
+        btn = Button()
+        btn.Text = preset_name
+        btn.Location = Point(preset_x, y - 2)
+        btn.Size = Size(180, 25)
+        btn.Font = Font("Arial", 8)
+        btn.Click += lambda s, e, pn=preset_name: apply_preset(pn)
+        form.Controls.Add(btn)
+        preset_x += 190
+    
+    y += 35
+    
+    def on_ok(s, e):
+        new_grouping = OrderedDict()
+        for g_idx in range(5):
+            prefixes = []
+            for cb in group_combos[g_idx]:
+                if cb.SelectedItem and cb.SelectedItem.ToString():
+                    prefixes.append(cb.SelectedItem.ToString())
+            name = group_name_boxes[g_idx].Text.strip()
+            if prefixes and name:
+                new_grouping[name] = prefixes
+        if new_grouping:
+            result['grouping'] = new_grouping
+            form.DialogResult = DialogResult.OK
+            form.Close()
+        else:
+            MessageBox.Show("Настройте хотя бы одну группу!", "Предупреждение")
+    
+    def on_cancel(s, e):
+        form.DialogResult = DialogResult.Cancel
+        form.Close()
+    
+    btn_ok = Button()
+    btn_ok.Text = "▶ Продолжить"
+    btn_ok.Location = Point(350, y)
+    btn_ok.Size = Size(140, 35)
+    btn_ok.Font = Font("Arial", 10, FontStyle.Bold)
+    btn_ok.BackColor = Color.LightGreen
+    btn_ok.Click += on_ok
+    form.Controls.Add(btn_ok)
+    
+    btn_cancel = Button()
+    btn_cancel.Text = "По умолчанию"
+    btn_cancel.Location = Point(500, y)
+    btn_cancel.Size = Size(140, 35)
+    btn_cancel.Font = Font("Arial", 9)
+    btn_cancel.Click += on_cancel
+    form.Controls.Add(btn_cancel)
+    
+    form.ShowDialog()
+    
+    if result['grouping'] is not None:
+        return result['grouping']
+    return None
+
+
 # ============ WINFORMS UI ============
 
 def show_placement_form(views_data, sheet_w, sheet_h):
@@ -1665,6 +1948,33 @@ def main():
     VIEW_SIZE_CACHE.clear()
     print("🧹 Кэш размеров видов очищен")
     
+    # Запрашиваем настройку групп
+    global GROUPING
+    custom_grouping = show_group_config_form()
+    if custom_grouping is not None:
+        GROUPING = custom_grouping
+        print("📋 Используется пользовательская группировка:")
+        for name, prefixes in GROUPING.items():
+            print("  " + name + ": " + ", ".join(prefixes))
+    else:
+        GROUPING = OrderedDict(DEFAULT_GROUPING)
+        print("📋 Используется группировка по умолчанию")
+    
+    # Подробная информация о соответствии префиксов и групп
+    print("\n🔍 СООТВЕТСТВИЕ ПРЕФИКСОВ И ГРУПП:")
+    all_prefixes = []
+    for group_name, prefixes in GROUPING.items():
+        if prefixes:
+            all_prefixes.extend(prefixes)
+            print("  Группа '" + group_name + "': " + ", ".join(prefixes))
+        else:
+            print("  Группа '" + group_name + "': (пустая)")
+    # Префиксы, не входящие ни в одну группу
+    known_prefixes = set(all_prefixes)
+    print("  Всего уникальных префиксов в группах: " + str(len(known_prefixes)))
+    if known_prefixes:
+        print("  Список: " + ", ".join(sorted(known_prefixes)))
+    
     # Статистика времени
     total_analysis_time = 0.0
     total_placement_time = 0.0
@@ -1726,11 +2036,32 @@ def main():
         if view.IsTemplate or view.Id in placed_cache:
             continue
         prefix, _ = extract_prefix_and_numbers(view.Name)
-        if not prefix:
-            continue
+        # Добавляем все виды, включая без префикса (они попадут в группу "Без системы")
         views_data.append((view, get_group_for_prefix(prefix)))
     
     print("🔍 3D виды: всего " + str(len(all_3d)) + ", доступно " + str(len(views_data)))
+    
+    # Подробный анализ соответствия видов и групп
+    print("\n🔍 АНАЛИЗ СООТВЕТСТВИЯ ВИДОВ ГРУППАМ:")
+    group_counts = {}
+    for view, group in views_data:
+        prefix, _ = extract_prefix_and_numbers(view.Name)
+        group_counts[group] = group_counts.get(group, 0) + 1
+        # Выводим информацию для первых 10 видов, чтобы не засорять лог
+        if group_counts[group] <= 3:
+            print("  Вид '" + view.Name + "': префикс='" + prefix + "', группа='" + group + "'")
+    # Сводка по группам
+    print("\n📊 РАСПРЕДЕЛЕНИЕ ВИДОВ ПО ГРУППАМ:")
+    for group, count in sorted(group_counts.items()):
+        print("  Группа '" + group + "': " + str(count) + " видов")
+    # Префиксы, не попавшие ни в одну группу (должны быть в группе "Без системы")
+    unknown_prefixes = set()
+    for view, group in views_data:
+        if group == "Без системы":
+            prefix, _ = extract_prefix_and_numbers(view.Name)
+            unknown_prefixes.add(prefix)
+    if unknown_prefixes:
+        print("  Префиксы без группы: " + ", ".join(sorted(unknown_prefixes)))
     
     if not views_data:
         MessageBox.Show("Нет доступных 3D видов для размещения!", "Информация")
@@ -1766,8 +2097,23 @@ def main():
     print("\n📊 Группы для размещения:")
     for g in groups:
         print("  " + g + ": " + str(len(groups[g])) + " видов")
+        # Собираем префиксы в этой группе
+        prefixes_in_group = {}
         for v in groups[g]:
-            print("    - " + v.Name)
+            prefix, _ = extract_prefix_and_numbers(v.Name)
+            prefixes_in_group[prefix] = prefixes_in_group.get(prefix, 0) + 1
+        # Выводим префиксы
+        if prefixes_in_group:
+            prefix_summary = ", ".join([p + "(" + str(c) + ")" for p, c in sorted(prefixes_in_group.items())])
+            print("    Префиксы: " + prefix_summary)
+        # Выводим первые 5 видов (или все, если меньше)
+        max_show = 5
+        for i, v in enumerate(groups[g][:max_show]):
+            prefix, numbers = extract_prefix_and_numbers(v.Name)
+            numbers_str = ", ".join(str(n) for n in numbers) if numbers else "?"
+            print("    " + str(i+1) + ". " + v.Name + " (префикс: " + prefix + ", номер: " + numbers_str + ")")
+        if len(groups[g]) > max_show:
+            print("    ... и еще " + str(len(groups[g]) - max_show) + " видов")
     
     print("\n Анализ видов...")
     
@@ -1812,7 +2158,7 @@ def main():
         MessageBox.Show("Не удалось определить размеры ни одного вида!", "Ошибка")
         return
     
-    stamp_width = 100  # ширина штампа (правая часть листа) - не вычитаем из доступной ширины
+    stamp_width = 185  # ширина штампа (правая часть листа) - не вычитаем из доступной ширины
     stamp_height = tb_off  # высота штампа (нижняя часть листа)
     # Доступная ширина - полная ширина минус отступы (штамп не вычитаем из ширины)
     avail_w = int(frame_w - 2 * mx)
