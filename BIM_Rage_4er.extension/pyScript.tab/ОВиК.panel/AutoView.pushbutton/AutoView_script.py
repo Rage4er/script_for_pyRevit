@@ -5,7 +5,7 @@ __title__ = """Размещение
 __author__ = 'Rage'
 __doc__ = """Размещает 3D виды на листы по системам с оптимальным заполнением.
 Выбираем лист для образца основной надписи, запускаем скрипт."""
-__version__ = "6.0"
+__version__ = "6.1"
 
 import clr
 import re
@@ -23,15 +23,18 @@ from System.Windows.Forms import (
     Form, FormStartPosition, FormBorderStyle,
     DialogResult, MessageBox, Panel, BorderStyle,
     CheckBox, Button, Label, TextBox, GroupBox, ComboBox,
-    ComboBoxStyle
+    ComboBoxStyle, ProgressBar, ProgressBarStyle, FlatStyle,
+    Timer, Clipboard
 )
 from System.Drawing import (
     Font, FontStyle,
     Color, Point, Size,
-    Bitmap, Imaging, Graphics, Pen, SolidBrush, Rectangle
+    Bitmap, Imaging, Graphics, Pen, SolidBrush, Rectangle,
+    ContentAlignment, SystemColors
 )
 from System.Drawing.Imaging import PixelFormat
 from System.IO import Path, File, Directory
+from System.Diagnostics import Process
 
 from Autodesk.Revit.DB import (
     FilteredElementCollector,
@@ -61,35 +64,47 @@ app = doc.Application
 
 # ============ НАСТРОЙКИ ============
 
-# Настройки групп по умолчанию
 DEFAULT_GROUPING = OrderedDict([
     ("П-В",     ["П", "ПЕ", "В", "ВЕ"]),
     ("ДП-ДВ",   ["ДП", "ДПЕ", "ДВ", "ДВЕ"]),
     ("А-У",     ["А", "У"]),
 ])
 
-GROUPING = OrderedDict(DEFAULT_GROUPING)  # текущая группировка (может меняться пользователем)
+GROUPING = OrderedDict(DEFAULT_GROUPING)
 
 ALL_PREFIXES = ['ПЕ', 'ВЕ', 'ДПЕ', 'ДВЕ', 'П', 'В', 'ДП', 'ДВ', 'А', 'У']
 GROUP_NAMES_DEFAULT = ["П-В", "ДП-ДВ", "А-У", "", ""]
 
 EXPORT_PIXELS = 1000
 PADDING_MM = 5
-STAMP_WIDTH_MM = 185  # ширина штампа (правая часть листа)
-STAMP_HEIGHT_MM = 55  # высота штампа (нижняя часть листа)
-CALIBRATION_SQUARE_MM = 5.0  # квадраты 5×5 мм вместо 100×100 мм (почти невидимые)
+STAMP_WIDTH_MM = 185
+STAMP_HEIGHT_MM = 55
+CALIBRATION_SQUARE_MM = 5.0
 SQUARE_LINE_STEP_MM = 0.5
 SQUARE_LINE_COUNT = 1
-MM_PER_PX = 1.5  # 1500mm / 1000px = 1.5 мм/пиксель
+MM_PER_PX = 1.5
 
-# Пределы для проверки качества калибровки
-MIN_SQUARE_SIZE_PX = 3     # 5мм × 0.67 px/мм ≈ 3px (фиксированный размер при 1000px)
-MAX_SQUARE_SIZE_PX = 1000  # максимальный ожидаемый размер квадрата в пикселях
-MIN_MM_PER_PX = 0.3        # минимальный коэффициент мм/пиксель (соответствует ~3.33 px/мм)
-MAX_MM_PER_PX = 2.0        # максимальный коэффициент мм/пиксель (соответствует 0.5 px/мм)
+MIN_SQUARE_SIZE_PX = 3
+MAX_SQUARE_SIZE_PX = 1000
+MIN_MM_PER_PX = 0.3
+MAX_MM_PER_PX = 2.0
 
-# Кэш размеров видов для ускорения повторных измерений
 VIEW_SIZE_CACHE = {}
+
+LOG_COLLECTOR = []
+SHOW_LOGS = False
+CREATION_WARNINGS = []
+
+def log_message(msg):
+    global LOG_COLLECTOR
+    LOG_COLLECTOR.append(msg)
+    if SHOW_LOGS:
+        print(msg)
+
+def warn_creation(msg):
+    global CREATION_WARNINGS
+    CREATION_WARNINGS.append(msg)
+    log_message("  ⚠️ " + msg)
 
 # ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
 
@@ -115,51 +130,30 @@ def get_view_short_name(view_name):
 
 
 def extract_prefix_and_numbers(view_name):
-    """
-    Извлекает префикс системы и числа из имени вида.
-    Префикс ищется ТОЛЬКО после разделителей или в начале имени.
-    После префикса ОБЯЗАТЕЛЬНО должна идти цифра (индекс).
-    Максимальная длина префикса — 3 символа.
-    Примеры:
-      "Схема_Возд_П1.2" → ("П", (1, 2))
-      "В_3D_вент" → ("", (3,))  # после В идёт "_", а не цифра
-      "тест_В1.11.2 копия 1" → ("В", (1, 11, 2))
-      "тест копия 1" → ("", (1,))  # нет префикса
-    """
     if not view_name:
         return "", (0,)
     
     name_upper = view_name.upper()
-    
-    # Разбиваем имя на токены по разделителям
     tokens = re.split(r'[ _\-]+', name_upper)
-    
-    # Сортируем префиксы по длине (длинные primero: ДПЕ, ДВЕ, ПЕ, ВЕ...)
     sorted_prefixes = sorted(ALL_PREFIXES, key=len, reverse=True)
     
-    # Ищем префикс в каждом токене
     for token in tokens:
         token = token.strip()
         if not token:
             continue
         
         for prefix in sorted_prefixes:
-            # Токен должен быть НЕ короче префикса
             if len(token) <= len(prefix):
                 continue
-            
-            # Токен должен начинаться с префикса
             if not token.startswith(prefix):
                 continue
             
-            # После префикса ОБЯЗАТЕЛЬНО должна идти цифра
             after = token[len(prefix):]
             if after and after[0].isdigit():
                 numbers = re.findall(r'\d+', after)
                 if numbers:
                     return prefix, tuple(int(n) for n in numbers)
     
-    # Если префикс не найден в токенах — ищем во всей строке (для имён без разделителей)
     for prefix in sorted_prefixes:
         idx = name_upper.find(prefix)
         if idx >= 0:
@@ -169,7 +163,6 @@ def extract_prefix_and_numbers(view_name):
                 if numbers:
                     return prefix, tuple(int(n) for n in numbers)
     
-    # Если префикс не найден — возвращаем числа из имени
     numbers = re.findall(r'\d+', view_name)
     if numbers:
         return "", tuple(int(n) for n in numbers)
@@ -208,7 +201,7 @@ def collect_placed_views():
             for vp in vps:
                 placed.add(vp.ViewId)
     except Exception as e:
-        print("Ошибка при сборе размещённых видов: " + str(e))
+        log_message("Ошибка при сборе размещённых видов: " + str(e))
     return placed
 
 
@@ -225,23 +218,17 @@ def get_sheet_frame_mm(sheet):
     if not bbox:
         return None
     
-    # Стандартные размеры форматов ГОСТ (мм)
     GOST_SIZES = {
-        "А4": (297, 210),
-        "А3": (420, 297),
-        "А2": (594, 420),
-        "А1": (841, 594),
-        "А0": (1189, 841),
+        "А4": (297, 210), "А3": (420, 297), "А2": (594, 420),
+        "А1": (841, 594), "А0": (1189, 841),
     }
     
-    # Параметры, которые могут содержать размеры
+    param_format = tb.LookupParameter("Формат ГОСТ")
     param_height_real = tb.LookupParameter("Высота_Реальная")
     param_width_real = tb.LookupParameter("Ширина_Реальная")
     param_height = tb.LookupParameter("Высота")
     param_width = tb.LookupParameter("Ширина")
-    param_format = tb.LookupParameter("Формат ГОСТ")
     
-    # Размеры из bounding box (в миллиметрах)
     width_mm_from_bbox = (bbox.Max.X - bbox.Min.X) * 304.8
     height_mm_from_bbox = (bbox.Max.Y - bbox.Min.Y) * 304.8
     
@@ -249,74 +236,36 @@ def get_sheet_frame_mm(sheet):
     MAX_FRAME_SIZE_MM = 5000.0
     
     def is_reasonable(h, w):
-        """Проверяет, что размеры находятся в разумном диапазоне."""
         return (MIN_FRAME_SIZE_MM <= h <= MAX_FRAME_SIZE_MM and
                 MIN_FRAME_SIZE_MM <= w <= MAX_FRAME_SIZE_MM)
     
-    def try_use_params(h_param, w_param, param_names):
-        if h_param and w_param:
-            h_raw = h_param.AsDouble()
-            w_raw = w_param.AsDouble()
-            # Вывод сырых значений для отладки
-            print("    🔍 Параметры рамки '{}': сырые значения ширина={}, высота={} (внутренние единицы)".format(param_names, w_raw, h_raw))
-            # Внутренние единицы Revit — футы, преобразуем в миллиметры
-            h_mm = h_raw * 304.8
-            w_mm = w_raw * 304.8
-            print("    🔍 Преобразовано в миллиметры: ширина={} мм, высота={} мм".format(int(w_mm), int(h_mm)))
-            if is_reasonable(h_mm, w_mm):
-                print("    📏 Используются параметры рамки ({}): Ширина={} мм, Высота={} мм".format(param_names, int(w_mm), int(h_mm)))
-                return (w_mm, h_mm)
-            else:
-                print("    ⚠️ Параметры рамки найдены, но значения некорректны (ширина={} мм, высота={} мм).".format(int(w_mm), int(h_mm)))
-        return None
-    
-    # Сначала пробуем определить формат по параметру "Формат ГОСТ"
     if param_format and param_format.HasValue:
         format_str = param_format.AsString()
         if format_str in GOST_SIZES:
             std_w, std_h = GOST_SIZES[format_str]
-            # Проверяем ориентацию (книжная/альбомная)
             param_orientation = tb.LookupParameter("Книжная ориентация")
             if param_orientation and param_orientation.HasValue and param_orientation.AsInteger() == 0:
-                # Альбомная ориентация: ширина > высоты
                 width_mm = max(std_w, std_h)
                 height_mm = min(std_w, std_h)
             else:
-                # Книжная ориентация по умолчанию
                 width_mm = min(std_w, std_h)
                 height_mm = max(std_w, std_h)
-            print("    📏 Используется формат ГОСТ '{}': Ширина={} мм, Высота={} мм".format(format_str, int(width_mm), int(height_mm)))
-            min_x_mm = bbox.Min.X * 304.8
-            min_y_mm = bbox.Min.Y * 304.8
-            return (width_mm, height_mm, min_x_mm, min_y_mm)
-        else:
-            print("    ⚠️ Параметр 'Формат ГОСТ' содержит неизвестное значение: '{}'".format(format_str))
+            return (width_mm, height_mm, bbox.Min.X * 304.8, bbox.Min.Y * 304.8)
     
-    # Пробуем параметры "Высота_Реальная"/"Ширина_Реальная"
-    result = try_use_params(param_height_real, param_width_real, "Высота_Реальная/Ширина_Реальная")
-    if result is None:
-        # Пробуем параметры "Высота"/"Ширина"
-        result = try_use_params(param_height, param_width, "Высота/Ширина")
+    for h_param, w_param in [(param_height_real, param_width_real), (param_height, param_width)]:
+        if h_param and w_param:
+            try:
+                h_mm = h_param.AsDouble() * 304.8
+                w_mm = w_param.AsDouble() * 304.8
+                if is_reasonable(h_mm, w_mm):
+                    return (w_mm, h_mm, bbox.Min.X * 304.8, bbox.Min.Y * 304.8)
+            except Exception:
+                pass
     
-    if result is not None:
-        width_mm, height_mm = result
-    else:
-        # Если ни один параметр не подошёл, используем bounding box
-        if is_reasonable(height_mm_from_bbox, width_mm_from_bbox):
-            width_mm = width_mm_from_bbox
-            height_mm = height_mm_from_bbox
-            print("    📏 Используется bounding box рамки: Ширина={} мм, Высота={} мм".format(int(width_mm), int(height_mm)))
-        else:
-            # Bounding box тоже некорректен, используем стандартный размер А3 с предупреждением
-            width_mm = 420.0
-            height_mm = 297.0
-            print("    ⚠️ Некорректные размеры рамки (bounding box: {}x{} мм). Используется стандартный формат А3 (420x297 мм).".format(
-                int(width_mm_from_bbox), int(height_mm_from_bbox)))
+    if is_reasonable(height_mm_from_bbox, width_mm_from_bbox):
+        return (width_mm_from_bbox, height_mm_from_bbox, bbox.Min.X * 304.8, bbox.Min.Y * 304.8)
     
-    min_x_mm = bbox.Min.X * 304.8
-    min_y_mm = bbox.Min.Y * 304.8
-    
-    return (width_mm, height_mm, min_x_mm, min_y_mm)
+    return (420.0, 297.0, bbox.Min.X * 304.8, bbox.Min.Y * 304.8)
 
 
 def get_title_block_type_id(sheet=None):
@@ -370,62 +319,20 @@ def create_sheet(template_sheet):
                         val = p_template.AsElementId()
                         if val and val != ElementId.InvalidElementId:
                             p_new.Set(val)
-                except:
+                except Exception:
                     pass
     
-    # Копирование параметра листа "ADSK_Штамп Раздел проекта" (строчная "п" в "проекта")
-    param_name = "ADSK_Штамп Раздел проекта"
-    p_template = template_sheet.LookupParameter(param_name)
-    p_new = new_sheet.LookupParameter(param_name)
-    
-    print("  🔍 Проверка параметра листа '{}':".format(param_name))
-    
-    if p_template:
-        print("    📋 Найден на шаблоне: тип={}, HasValue={}, значение='{}'".format(
-            p_template.StorageType,
-            p_template.HasValue,
-            p_template.AsValueString() if p_template.HasValue else "нет значения"
-        ))
-    else:
-        print("    ❌ Не найден на шаблоне")
-    
-    if p_new:
-        print("    📋 Найден на новом листе: только для чтения={}".format(p_new.IsReadOnly))
-    else:
-        print("    ❌ Не найден на новом листе")
-    
-    if p_template and p_template.HasValue and p_new and not p_new.IsReadOnly:
+    # Копируем параметры листа
+    sheet_params = ["ADSK_Штамп Раздел проекта", "ADSK_Номер проекта", "ADSK_Название проекта"]
+    for param_name in sheet_params:
         try:
-            if p_template.StorageType == StorageType.String:
-                value = p_template.AsString()
-                p_new.Set(value)
-                print("    ✅ Скопирован строковый параметр: '{}'".format(value))
-            elif p_template.StorageType == StorageType.Integer:
-                value = p_template.AsInteger()
-                p_new.Set(value)
-                print("    ✅ Скопирован целочисленный параметр: {}".format(value))
-            elif p_template.StorageType == StorageType.Double:
-                value = p_template.AsDouble()
-                p_new.Set(value)
-                print("    ✅ Скопирован вещественный параметр: {}".format(value))
-            elif p_template.StorageType == StorageType.ElementId:
-                val = p_template.AsElementId()
-                if val and val != ElementId.InvalidElementId:
-                    p_new.Set(val)
-                    print("    ✅ Скопирован параметр ElementId: {}".format(val))
-            else:
-                print("    ⚠️ Неизвестный тип хранения: {}".format(p_template.StorageType))
-        except Exception as e:
-            print("    ❌ Ошибка при копировании: {}".format(e))
-    else:
-        if not p_template:
-            print("    ⚠️ Пропускаем: параметр не найден на шаблоне")
-        elif not p_template.HasValue:
-            print("    ⚠️ Пропускаем: параметр на шаблоне не имеет значения")
-        elif not p_new:
-            print("    ⚠️ Пропускаем: параметр не найден на новом листе")
-        elif p_new.IsReadOnly:
-            print("    ⚠️ Пропускаем: параметр только для чтения на новом листе")
+            p_template = template_sheet.LookupParameter(param_name)
+            p_new = new_sheet.LookupParameter(param_name)
+            if p_template and p_template.HasValue and p_new and not p_new.IsReadOnly:
+                if p_template.StorageType == StorageType.String:
+                    p_new.Set(p_template.AsString())
+        except Exception:
+            pass
     
     return new_sheet
 
@@ -440,10 +347,8 @@ def clear_sheet_viewports(sheet):
 
 
 def draw_thick_square(doc, sheet, center_ft, half_size_ft):
-    """Рисует утолщённый квадрат из нескольких вложенных линий."""
     px = center_ft.X
     py = center_ft.Y
-    
     step_ft = SQUARE_LINE_STEP_MM / 304.8
     
     for i in range(SQUARE_LINE_COUNT):
@@ -455,71 +360,45 @@ def draw_thick_square(doc, sheet, center_ft, half_size_ft):
         x0, y0 = px - h, py - h
         x1, y1 = px + h, py + h
         
-        doc.Create.NewDetailCurve(sheet,
-            Line.CreateBound(XYZ(x0, y0, 0), XYZ(x1, y0, 0)))
-        doc.Create.NewDetailCurve(sheet,
-            Line.CreateBound(XYZ(x0, y1, 0), XYZ(x1, y1, 0)))
-        doc.Create.NewDetailCurve(sheet,
-            Line.CreateBound(XYZ(x0, y0, 0), XYZ(x0, y1, 0)))
-        doc.Create.NewDetailCurve(sheet,
-            Line.CreateBound(XYZ(x1, y0, 0), XYZ(x1, y1, 0)))
+        doc.Create.NewDetailCurve(sheet, Line.CreateBound(XYZ(x0, y0, 0), XYZ(x1, y0, 0)))
+        doc.Create.NewDetailCurve(sheet, Line.CreateBound(XYZ(x0, y1, 0), XYZ(x1, y1, 0)))
+        doc.Create.NewDetailCurve(sheet, Line.CreateBound(XYZ(x0, y0, 0), XYZ(x0, y1, 0)))
+        doc.Create.NewDetailCurve(sheet, Line.CreateBound(XYZ(x1, y0, 0), XYZ(x1, y1, 0)))
 
 
-# ============ ПОИСК КВАДРАТОВ (EDGE DETECTION) ============
+# ============ ПОИСК КВАДРАТОВ ============
 
 def find_squares_by_edges(bitmap):
-    """Возвращает фиктивные калибровочные квадраты на основе известной геометрии."""
     w = bitmap.Width
     h = bitmap.Height
     
-    print("    Используем фиксированные калибровочные квадраты (" + str(w) + "x" + str(h) + " px)")
-    
-    # Предполагаем, что изображение соответствует калибровочной области 1500×1500 мм
-    # и экспортировано с разрешением 1000×1000 пикселей (EXPORT_PIXELS = 1000).
-    # Если размер изображения отличается, масштабируем координаты пропорционально.
-    ref_size = 1000  # эталонная ширина/высота (новое разрешение)
+    ref_size = 1000
     scale_x = w / ref_size
     scale_y = h / ref_size
     
-    # Размер квадрата в пикселях при эталонном размере: 5 мм * (1000 px / 1500 мм) = 3.33 ≈ 3 px
     square_size_ref = 3
-    # Расстояние от центра до центра квадрата в эталонных пикселях: 700 мм * (1000/1500) = 466.67 ≈ 467 px
     offset_ref = 467
     
-    # Центр изображения
     center_x = w / 2
     center_y = h / 2
     
-    # Масштабированные смещение и размер
     offset_x = offset_ref * scale_x
     offset_y = offset_ref * scale_y
-    square_size = square_size_ref * ((scale_x + scale_y) / 2)  # средний масштаб
+    square_size = square_size_ref * ((scale_x + scale_y) / 2)
     
-    # Координаты центров четырёх квадратов
     squares = []
     for dx, dy in [(-1, -1), (1, -1), (-1, 1), (1, 1)]:
         cx = center_x + dx * offset_x
         cy = center_y + dy * offset_y
-        squares.append({
-            'x': int(cx),
-            'y': int(cy),
-            'size': int(square_size),
-            'score': 1.0
-        })
+        squares.append({'x': int(cx), 'y': int(cy), 'size': int(square_size), 'score': 1.0})
     
-    print("    Создано фиктивных квадратов: " + str(len(squares)))
     return squares
 
 
 def enhance_bitmap(bitmap):
-    """
-    Усиливает контраст и утолщает линии.
-    Max pooling 5×5 + растягивание гистограммы.
-    """
     w = bitmap.Width
     h = bitmap.Height
     
-    # Max pooling 5×5
     enhanced = [[0] * w for _ in range(h)]
     
     for y in range(h):
@@ -539,12 +418,10 @@ def enhance_bitmap(bitmap):
                         max_val = val
             enhanced[y][x] = max_val
     
-    # Растягиваем гистограмму (игнорируя углы калибровки ~8% от меньшей стороны)
-    # Для разрешения 1000×1000 px: min(w, h) // 12 = 83, max(80, 83) = 83
-    exclude_margin = max(80, min(w, h) // 12)  # примерно 8%, но не менее 80px
-    # Ограничим, чтобы не превышать четверть размера
+    exclude_margin = max(80, min(w, h) // 12)
     if exclude_margin > min(w, h) // 4:
         exclude_margin = min(w, h) // 4
+    
     min_val = 255
     max_val = 0
     for y in range(exclude_margin, h - exclude_margin):
@@ -555,12 +432,10 @@ def enhance_bitmap(bitmap):
             if v > max_val:
                 max_val = v
     
-    # Если диапазон слишком мал, расширяем его
     if max_val - min_val < 10:
         min_val = max(0, min_val - 5)
         max_val = min(255, max_val + 5)
     
-    # Применяем растяжение ко всему изображению
     if max_val > min_val:
         scale = 255.0 / (max_val - min_val)
         for y in range(h):
@@ -568,7 +443,6 @@ def enhance_bitmap(bitmap):
                 v = enhanced[y][x]
                 enhanced[y][x] = int((v - min_val) * scale)
     
-    # Создаём результирующее изображение (grayscale для простоты)
     result = Bitmap(w, h, PixelFormat.Format32bppArgb)
     for y in range(h):
         for x in range(w):
@@ -578,239 +452,49 @@ def enhance_bitmap(bitmap):
     return result
 
 
-def detect_theme(bitmap):
-    """Определяет тему по яркости краёв."""
-    w = bitmap.Width
-    h = bitmap.Height
-    
-    samples = []
-    step = max(1, min(w, h) // 30)
-    
-    for x in range(0, w, step):
-        samples.append(bitmap.GetPixel(x, 0))
-        samples.append(bitmap.GetPixel(x, h - 1))
-    for y in range(0, h, step):
-        samples.append(bitmap.GetPixel(0, y))
-        samples.append(bitmap.GetPixel(w - 1, y))
-    
-    if not samples:
-        return 'dark'
-    
-    avg = sum(max(c.R, c.G, c.B) for c in samples) / len(samples)
-    print("    Яркость фона: " + str(int(avg)))
-    return 'dark' if avg < 100 else 'light'
-
-
-def find_page_bounds(bitmap):
-    """Находит границы листа A4 на изображении (исключая поля)."""
-    w = bitmap.Width
-    h = bitmap.Height
-    
-    # Определяем фон по краям изображения (предполагаем, что поля однородные)
-    edge_samples = []
-    step = max(1, min(w, h) // 30)
-    for x in range(0, w, step):
-        edge_samples.append(bitmap.GetPixel(x, 0))
-        edge_samples.append(bitmap.GetPixel(x, h - 1))
-    for y in range(0, h, step):
-        edge_samples.append(bitmap.GetPixel(0, y))
-        edge_samples.append(bitmap.GetPixel(w - 1, y))
-    
-    if not edge_samples:
-        return 0, 0, w - 1, h - 1
-    
-    # Средняя яркость фона
-    bg_avg = sum(max(c.R, c.G, c.B) for c in edge_samples) / len(edge_samples)
-    # Порог для отделения фона от листа (эмпирически)
-    threshold = bg_avg + 20 if bg_avg < 128 else bg_avg - 20
-    
-    # Сканируем по горизонтали для поиска левой и правой границы
-    left = 0
-    for x in range(0, w, 2):
-        col_avg = sum(max(bitmap.GetPixel(x, y).R, bitmap.GetPixel(x, y).G, bitmap.GetPixel(x, y).B)
-                      for y in range(0, h, max(1, h // 20))) / (h // max(1, h // 20))
-        if (bg_avg < 128 and col_avg > threshold) or (bg_avg >= 128 and col_avg < threshold):
-            left = x
-            break
-    
-    right = w - 1
-    for x in range(w - 1, -1, -2):
-        col_avg = sum(max(bitmap.GetPixel(x, y).R, bitmap.GetPixel(x, y).G, bitmap.GetPixel(x, y).B)
-                      for y in range(0, h, max(1, h // 20))) / (h // max(1, h // 20))
-        if (bg_avg < 128 and col_avg > threshold) or (bg_avg >= 128 and col_avg < threshold):
-            right = x
-            break
-    
-    # Сканируем по вертикали для верхней и нижней границы
-    top = 0
-    for y in range(0, h, 2):
-        row_avg = sum(max(bitmap.GetPixel(x, y).R, bitmap.GetPixel(x, y).G, bitmap.GetPixel(x, y).B)
-                      for x in range(0, w, max(1, w // 20))) / (w // max(1, w // 20))
-        if (bg_avg < 128 and row_avg > threshold) or (bg_avg >= 128 and row_avg < threshold):
-            top = y
-            break
-    
-    bottom = h - 1
-    for y in range(h - 1, -1, -2):
-        row_avg = sum(max(bitmap.GetPixel(x, y).R, bitmap.GetPixel(x, y).G, bitmap.GetPixel(x, y).B)
-                      for x in range(0, w, max(1, w // 20))) / (w // max(1, w // 20))
-        if (bg_avg < 128 and row_avg > threshold) or (bg_avg >= 128 and row_avg < threshold):
-            bottom = y
-            break
-    
-    # Добавляем небольшой запас (1 пиксель) чтобы гарантировать попадание внутрь листа
-    left = max(0, left - 1)
-    right = min(w - 1, right + 1)
-    top = max(0, top - 1)
-    bottom = min(h - 1, bottom + 1)
-    
-    print("    Границы листа: left={}, top={}, right={}, bottom={}".format(left, top, right, bottom))
-    return left, top, right, bottom
-
-
-def find_content_bounds(bitmap, exclusion_zones=None):
-    """Находит границы содержимого, исключая зоны квадратов."""
-    if exclusion_zones is None:
-        exclusion_zones = []
-    
-    w = bitmap.Width
-    h = bitmap.Height
-    
-    bg_pixels = []
-    step = max(1, min(w, h) // 30)
-    
-    for x in range(0, w, step):
-        excluded = any(z[0] <= x <= z[2] and z[1] <= 0 <= z[3] for z in exclusion_zones)
-        if not excluded:
-            c = bitmap.GetPixel(x, 0)
-            bg_pixels.append(max(c.R, c.G, c.B))
-        excluded = any(z[0] <= x <= z[2] and z[1] <= h-1 <= z[3] for z in exclusion_zones)
-        if not excluded:
-            c = bitmap.GetPixel(x, h-1)
-            bg_pixels.append(max(c.R, c.G, c.B))
-    
-    for y in range(0, h, step):
-        excluded = any(z[0] <= 0 <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones)
-        if not excluded:
-            c = bitmap.GetPixel(0, y)
-            bg_pixels.append(max(c.R, c.G, c.B))
-        excluded = any(z[0] <= w-1 <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones)
-        if not excluded:
-            c = bitmap.GetPixel(w-1, y)
-            bg_pixels.append(max(c.R, c.G, c.B))
-    
-    if not bg_pixels:
-        bg_avg = 128
-    else:
-        bg_avg = sum(bg_pixels) / len(bg_pixels)
-    
-    if bg_avg < 100:
-        threshold = bg_avg + 20
-        def is_content(b):
-            return b > threshold
-    else:
-        threshold = bg_avg - 20
-        def is_content(b):
-            return b < threshold
-    
-    sample_step = max(1, min(w, h) // 80)
-    
-    # Отладочная информация
-    print("    find_content_bounds: bg_avg={}, threshold={}, step={}, dark={}".format(
-        bg_avg, threshold, sample_step, bg_avg < 100))
-    
-    min_x, max_x = w, 0
-    min_y, max_y = h, 0
-    found = False
-    content_pixels = 0
-    
-    for y in range(0, h, sample_step):
-        for x in range(0, w, sample_step):
-            excluded = any(z[0] <= x <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones)
-            if excluded:
-                continue
-            c = bitmap.GetPixel(x, y)
-            b = max(c.R, c.G, c.B)
-            if is_content(b):
-                min_x = min(min_x, x)
-                max_x = max(max_x, x)
-                min_y = min(min_y, y)
-                max_y = max(max_y, y)
-                found = True
-                content_pixels += 1
-    
-    if not found:
-        print("    find_content_bounds: не найдено ни одного пикселя содержимого")
-        return None
-    
-    # Отладочная статистика
-    print("    find_content_bounds: найдено пикселей содержимого={}, границы x=[{}, {}] y=[{}, {}]".format(
-        content_pixels, min_x, max_x, min_y, max_y))
-    
-    return {'min_x': min_x, 'min_y': min_y, 'max_x': max_x, 'max_y': max_y}
-
-
 def find_content_bounds_3pass(bitmap, exclusion_zones=None):
-    """
-    Трехпроходной поиск границ с адаптивным порогом для разрешения 1000×1000 px.
-    Проход 1: шаг 100px по всей области (исключая exclusion_zones)
-    Проход 2: шаг 25px в области, расширенной на +100px от результатов прохода 1
-    Проход 3: шаг 5px в периметре (±30px от границ прохода 2)
-    Возвращает словарь {'min_x', 'min_y', 'max_x', 'max_y'} или None.
-    """
     if exclusion_zones is None:
         exclusion_zones = []
     
     w = bitmap.Width
     h = bitmap.Height
     
-    # Вспомогательная функция для определения содержимого
     def is_content(b, bg_avg, dark_background):
         if dark_background:
             return b > bg_avg + 20
         else:
             return b < bg_avg - 20
     
-    # Функция для оценки фона по краям изображения (исключая exclusion_zones)
     def estimate_background():
         bg_samples = []
         step = max(1, min(w, h) // 30)
         
-        # Собираем пиксели с краев изображения
         for x in range(0, w, step):
-            excluded_top = any(z[0] <= x <= z[2] and z[1] <= 0 <= z[3] for z in exclusion_zones)
-            if not excluded_top:
+            if not any(z[0] <= x <= z[2] and z[1] <= 0 <= z[3] for z in exclusion_zones):
                 c = bitmap.GetPixel(x, 0)
                 bg_samples.append(max(c.R, c.G, c.B))
-            excluded_bottom = any(z[0] <= x <= z[2] and z[1] <= h-1 <= z[3] for z in exclusion_zones)
-            if not excluded_bottom:
+            if not any(z[0] <= x <= z[2] and z[1] <= h-1 <= z[3] for z in exclusion_zones):
                 c = bitmap.GetPixel(x, h-1)
                 bg_samples.append(max(c.R, c.G, c.B))
         
         for y in range(0, h, step):
-            excluded_left = any(z[0] <= 0 <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones)
-            if not excluded_left:
+            if not any(z[0] <= 0 <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones):
                 c = bitmap.GetPixel(0, y)
                 bg_samples.append(max(c.R, c.G, c.B))
-            excluded_right = any(z[0] <= w-1 <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones)
-            if not excluded_right:
+            if not any(z[0] <= w-1 <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones):
                 c = bitmap.GetPixel(w-1, y)
                 bg_samples.append(max(c.R, c.G, c.B))
         
         if not bg_samples:
-            return 128, True  # по умолчанию темный фон
+            return 128, True
         
         bg_avg = sum(bg_samples) / len(bg_samples)
-        dark_background = bg_avg < 100
-        return bg_avg, dark_background
+        return bg_avg, bg_avg < 100
     
-    # Оцениваем фон
     bg_avg, dark_background = estimate_background()
-    
-    # Игнорируем углы изображения (80px от углов для 1000px)
     corner_size = 80
     
-    # Проход 1: шаг 100px по всей области
+    # Проход 1
     step1 = 100
     min_x1, max_x1 = w, 0
     min_y1, max_y1 = h, 0
@@ -818,427 +502,177 @@ def find_content_bounds_3pass(bitmap, exclusion_zones=None):
     
     for y in range(0, h, step1):
         for x in range(0, w, step1):
-            # Игнорируем exclusion_zones
-            excluded = any(z[0] <= x <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones)
-            if excluded:
+            if any(z[0] <= x <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones):
                 continue
-            # Игнорируем углы
             if (x < corner_size and y < corner_size) or \
-               (x < corner_size and y > h - corner_size) or \
                (x > w - corner_size and y < corner_size) or \
+               (x < corner_size and y > h - corner_size) or \
                (x > w - corner_size and y > h - corner_size):
                 continue
             
-            c = bitmap.GetPixel(x, y)
-            b = max(c.R, c.G, c.B)
-            
+            b = max(bitmap.GetPixel(x, y).R, bitmap.GetPixel(x, y).G, bitmap.GetPixel(x, y).B)
             if is_content(b, bg_avg, dark_background):
-                min_x1 = min(min_x1, x)
-                max_x1 = max(max_x1, x)
-                min_y1 = min(min_y1, y)
-                max_y1 = max(max_y1, y)
+                min_x1, max_x1 = min(min_x1, x), max(max_x1, x)
+                min_y1, max_y1 = min(min_y1, y), max(max_y1, y)
                 found1 = True
     
     if not found1:
-        print("    find_content_bounds_3pass: проход 1 не нашел содержимого, пробуем проход 2 по всей области")
-        # Проход 2 по всей области (исключая углы и exclusion_zones)
         step2 = 25
-        min_x2, max_x2 = w, 0
-        min_y2, max_y2 = h, 0
-        found2 = False
-        
         for y in range(0, h, step2):
             for x in range(0, w, step2):
-                excluded = any(z[0] <= x <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones)
-                if excluded:
+                if any(z[0] <= x <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones):
                     continue
-                # Игнорируем углы
                 if (x < corner_size and y < corner_size) or \
-                   (x < corner_size and y > h - corner_size) or \
                    (x > w - corner_size and y < corner_size) or \
+                   (x < corner_size and y > h - corner_size) or \
                    (x > w - corner_size and y > h - corner_size):
                     continue
                 
-                c = bitmap.GetPixel(x, y)
-                b = max(c.R, c.G, c.B)
-                
+                b = max(bitmap.GetPixel(x, y).R, bitmap.GetPixel(x, y).G, bitmap.GetPixel(x, y).B)
                 if is_content(b, bg_avg, dark_background):
-                    min_x2 = min(min_x2, x)
-                    max_x2 = max(max_x2, x)
-                    min_y2 = min(min_y2, y)
-                    max_y2 = max(max_y2, y)
-                    found2 = True
+                    min_x1, max_x1 = min(min_x1, x), max(max_x1, x)
+                    min_y1, max_y1 = min(min_y1, y), max(max_y1, y)
+                    found1 = True
         
-        if not found2:
-            print("    find_content_bounds_3pass: проход 2 также не нашел содержимого")
+        if not found1:
             return None
-        
-        # Используем результаты прохода 2 как основу для прохода 3
-        min_x1, max_x1 = min_x2, max_x2
-        min_y1, max_y1 = min_y2, max_y2
-        found1 = True
-        print("    find_content_bounds_3pass: проход 2 нашел границы x=[{}, {}] y=[{}, {}]".format(
-            min_x1, max_x1, min_y1, max_y1))
     
-    # Расширяем область для прохода 2 (теперь это проход 2 уточнения) на +100px (шаг первого прохода)
+    # Проход 2
     expand1 = step1
-    search_x1 = max(0, min_x1 - expand1)
-    search_x2 = min(w - 1, max_x1 + expand1)
-    search_y1 = max(0, min_y1 - expand1)
-    search_y2 = min(h - 1, max_y1 + expand1)
+    sx1, sx2 = max(0, min_x1 - expand1), min(w-1, max_x1 + expand1)
+    sy1, sy2 = max(0, min_y1 - expand1), min(h-1, max_y1 + expand1)
     
-    # Проход 2: шаг 25px в расширенной области
     step2 = 25
     min_x2, max_x2 = w, 0
     min_y2, max_y2 = h, 0
     found2 = False
     
-    for y in range(search_y1, search_y2 + 1, step2):
-        for x in range(search_x1, search_x2 + 1, step2):
-            excluded = any(z[0] <= x <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones)
-            if excluded:
+    for y in range(sy1, sy2 + 1, step2):
+        for x in range(sx1, sx2 + 1, step2):
+            if any(z[0] <= x <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones):
                 continue
-            
-            c = bitmap.GetPixel(x, y)
-            b = max(c.R, c.G, c.B)
-            
+            b = max(bitmap.GetPixel(x, y).R, bitmap.GetPixel(x, y).G, bitmap.GetPixel(x, y).B)
             if is_content(b, bg_avg, dark_background):
-                min_x2 = min(min_x2, x)
-                max_x2 = max(max_x2, x)
-                min_y2 = min(min_y2, y)
-                max_y2 = max(max_y2, y)
+                min_x2, max_x2 = min(min_x2, x), max(max_x2, x)
+                min_y2, max_y2 = min(min_y2, y), max(max_y2, y)
                 found2 = True
     
     if not found2:
-        # Используем результаты прохода 1
         min_x2, max_x2 = min_x1, max_x1
         min_y2, max_y2 = min_y1, max_y1
-    else:
-        # Расширяем область для прохода 3 на +25px (шаг второго прохода)
-        expand2 = step2
-        search_x1 = max(0, min_x2 - expand2)
-        search_x2 = min(w - 1, max_x2 + expand2)
-        search_y1 = max(0, min_y2 - expand2)
-        search_y2 = min(h - 1, max_y2 + expand2)
     
-    # Проход 3: шаг 5px в периметре (±30px от границ)
+    # Проход 3
     step3 = 5
     margin = 30
     min_x3, max_x3 = w, 0
     min_y3, max_y3 = h, 0
     found3 = False
     
-    # Определяем область периметра
-    perim_x1 = max(0, min_x2 - margin)
-    perim_x2 = min(w - 1, max_x2 + margin)
-    perim_y1 = max(0, min_y2 - margin)
-    perim_y2 = min(h - 1, max_y2 + margin)
+    px1, px2 = max(0, min_x2 - margin), min(w-1, max_x2 + margin)
+    py1, py2 = max(0, min_y2 - margin), min(h-1, max_y2 + margin)
     
-    # Сканируем только периметр (границы области)
-    for y in range(perim_y1, perim_y2 + 1, step3):
-        for x in range(perim_x1, perim_x2 + 1, step3):
-            # Пропускаем внутреннюю часть (только периметр)
-            if x > perim_x1 + margin and x < perim_x2 - margin and \
-               y > perim_y1 + margin and y < perim_y2 - margin:
+    for y in range(py1, py2 + 1, step3):
+        for x in range(px1, px2 + 1, step3):
+            if x > px1 + margin and x < px2 - margin and y > py1 + margin and y < py2 - margin:
                 continue
-            
-            excluded = any(z[0] <= x <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones)
-            if excluded:
+            if any(z[0] <= x <= z[2] and z[1] <= y <= z[3] for z in exclusion_zones):
                 continue
-            
-            c = bitmap.GetPixel(x, y)
-            b = max(c.R, c.G, c.B)
-            
+            b = max(bitmap.GetPixel(x, y).R, bitmap.GetPixel(x, y).G, bitmap.GetPixel(x, y).B)
             if is_content(b, bg_avg, dark_background):
-                min_x3 = min(min_x3, x)
-                max_x3 = max(max_x3, x)
-                min_y3 = min(min_y3, y)
-                max_y3 = max(max_y3, y)
+                min_x3, max_x3 = min(min_x3, x), max(max_x3, x)
+                min_y3, max_y3 = min(min_y3, y), max(max_y3, y)
                 found3 = True
     
     if not found3:
-        # Используем результаты прохода 2
-        result = {'min_x': min_x2, 'min_y': min_y2, 'max_x': max_x2, 'max_y': max_y2}
+        return {'min_x': min_x2, 'min_y': min_y2, 'max_x': max_x2, 'max_y': max_y2}
     else:
-        result = {'min_x': min_x3, 'min_y': min_y3, 'max_x': max_x3, 'max_y': max_y3}
-    
-    # Отладочная информация
-    print("    find_content_bounds_3pass: bg_avg={}, dark={}, границы x=[{}, {}] y=[{}, {}]".format(
-        int(bg_avg), dark_background, result['min_x'], result['max_x'], result['min_y'], result['max_y']))
-    
-    return result
+        return {'min_x': min_x3, 'min_y': min_y3, 'max_x': max_x3, 'max_y': max_y3}
 
 
-# ============ ОТЛАДОЧНАЯ ОТРИСОВКА ============
-
-def draw_debug_overlay(bitmap, squares, content_bounds, exclusion_zones, output_path, page_bounds=None, mm_per_px=None):
-    """Рисует на изображении найденные границы."""
-    debug_bmp = Bitmap(bitmap.Width, bitmap.Height, PixelFormat.Format32bppArgb)
-    g = Graphics.FromImage(debug_bmp)
-    g.DrawImage(bitmap, 0, 0)
-    
-    # Синий прямоугольник границ листа (если задан)
-    if page_bounds:
-        left, top, right, bottom = page_bounds
-        blue_pen = Pen(Color.Blue, 1)
-        g.DrawRectangle(blue_pen, left, top, right - left, bottom - top)
-        # Подпись
-        from System.Drawing import Font as GFont
-        font = GFont("Arial", 8, FontStyle.Regular)
-        text_brush = SolidBrush(Color.Blue)
-        g.DrawString("PAGE", font, text_brush, float(left + 2), float(top + 2))
-    
-    # Жёлтые зоны исключения (полупрозрачные)
-    yellow_brush = SolidBrush(Color.FromArgb(50, 255, 255, 0))
-    yellow_pen = Pen(Color.FromArgb(100, 255, 200, 0), 1)
-    for ex, ey, ex2, ey2 in exclusion_zones:
-        g.FillRectangle(yellow_brush, ex, ey, ex2 - ex + 1, ey2 - ey + 1)
-        g.DrawRectangle(yellow_pen, ex, ey, ex2 - ex + 1, ey2 - ey + 1)
-    
-    # Зелёные квадраты
-    green_pen = Pen(Color.LimeGreen, 2)
-    for idx, sq in enumerate(squares):
-        half = sq['size'] // 2
-        x = sq['x'] - half
-        y = sq['y'] - half
-        g.DrawRectangle(green_pen, x, y, sq['size'], sq['size'])
-        # Подпись квадрата
-        font = Font("Arial", 7, FontStyle.Regular)
-        text_brush = SolidBrush(Color.LimeGreen)
-        label = "{},{} size={}".format(sq['x'], sq['y'], sq['size'])
-        if mm_per_px is not None:
-            size_mm = sq['size'] * mm_per_px
-            label += " ({:.1f} mm)".format(size_mm)
-        g.DrawString(label, font, text_brush, float(x), float(y - 12))
-    
-    # Красный прямоугольник содержимого
-    if content_bounds:
-        red_pen = Pen(Color.Red, 2)
-        x = content_bounds['min_x']
-        y = content_bounds['min_y']
-        bw = content_bounds['max_x'] - content_bounds['min_x'] + 1
-        bh = content_bounds['max_y'] - content_bounds['min_y'] + 1
-        g.DrawRectangle(red_pen, x, y, bw, bh)
-        
-        # Размер в px и мм
-        from System.Drawing import Font as GFont
-        font = GFont("Arial", 10, FontStyle.Bold)
-        text_brush = SolidBrush(Color.Red)
-        size_label = "{}x{} px".format(bw, bh)
-        if mm_per_px is not None:
-            w_mm = bw * mm_per_px
-            h_mm = bh * mm_per_px
-            size_label += " ({:.1f}x{:.1f} mm)".format(w_mm, h_mm)
-        g.DrawString(size_label, font, text_brush, float(x), float(max(0, y - 18)))
-        # Координаты углов
-        coord_font = Font("Arial", 7, FontStyle.Regular)
-        g.DrawString("({},{})".format(x, y), coord_font, text_brush, float(x), float(y + bh + 2))
-    
-    # Легенда
-    legend_font = Font("Arial", 8, FontStyle.Regular)
-    bg_brush = SolidBrush(Color.FromArgb(200, 0, 0, 0))
-    g.FillRectangle(bg_brush, 5, 5, 235, 50)
-    g.DrawString("RED = границы вида", legend_font, SolidBrush(Color.Red), 10, 8)
-    g.DrawString("GREEN = калибр. квадраты", legend_font, SolidBrush(Color.LimeGreen), 10, 23)
-    g.DrawString("YELLOW = зоны исключения", legend_font, SolidBrush(Color.Yellow), 10, 38)
-    if page_bounds:
-        g.DrawString("BLUE = границы листа", legend_font, SolidBrush(Color.Blue), 10, 53)
-    
-    g.Dispose()
-    debug_bmp.Save(output_path)
-    debug_bmp.Dispose()
-
+# ============ ИЗМЕРЕНИЕ ВИДА ============
 
 def measure_view_with_calibration(view, stats=None):
-    """Измеряет вид с помощью калибровочных квадратов.
-    
-    Args:
-        view: Вид Revit
-        stats: Необязательный словарь для сбора статистики времени.
-               Если передан, будет добавлено поле 'analysis_time'.
-    """
-    import time
     temp_sheet = None
     temp_dir = None
     bitmap = None
     
     try:
-        # Проверяем кэш
         view_id = view.Id.IntegerValue
         if view_id in VIEW_SIZE_CACHE:
-            cached = VIEW_SIZE_CACHE[view_id]
-            print("  📐 Анализ вида: " + view.Name + " (из кэша)")
-            print("    Размер вида: " + str(int(cached[0])) + "x" + str(int(cached[1])) + " мм")
-            return cached
-        
-        print("  📐 Анализ вида: " + view.Name)
-        start_total = time.time()
+            return VIEW_SIZE_CACHE[view_id]
         
         if not doc.IsModifiable:
-            print("    ❌ Документ не редактируем!")
             return None
         
-        # ========== 1. Создаём временный лист ==========
-        start_create = time.time()
+        start_total = time.time()
+        
         sub_t = SubTransaction(doc)
         sub_t.Start()
         
         try:
             temp_sheet = ViewSheet.Create(doc, ElementId.InvalidElementId)
             temp_sheet.SheetNumber = "CAL_" + str(view.Id.IntegerValue)
-            safe_name = sanitize_sheet_name("Cal_" + view.Name[:25])
-            temp_sheet.Name = safe_name
+            temp_sheet.Name = sanitize_sheet_name("Cal_" + view.Name[:25])
             
-            elements_on_sheet = FilteredElementCollector(doc, temp_sheet.Id)\
-                .WhereElementIsNotElementType()\
-                .ToElements()
-            for elem in elements_on_sheet:
+            for elem in FilteredElementCollector(doc, temp_sheet.Id).WhereElementIsNotElementType().ToElements():
                 doc.Delete(elem.Id)
             
             doc.Regenerate()
             
             sq_ft = CALIBRATION_SQUARE_MM / 304.8
             half_ft = sq_ft / 2
-            # Расстояние между центрами квадратов 1400 мм, смещение от центра области до центра квадрата = 700 мм
             grid_ft = 700.0 / 304.8
-            cx = 0
-            cy = 0
             
             for dx, dy in [(-1, -1), (1, -1), (-1, 1), (1, 1)]:
-                center = XYZ(cx + dx * grid_ft, cy + dy * grid_ft, 0)
+                center = XYZ(dx * grid_ft, dy * grid_ft, 0)
                 draw_thick_square(doc, temp_sheet, center, half_ft)
             
-            Viewport.Create(doc, temp_sheet.Id, view.Id, XYZ(cx, cy, 0))
+            Viewport.Create(doc, temp_sheet.Id, view.Id, XYZ(0, 0, 0))
             doc.Regenerate()
             sub_t.Commit()
-            create_time = time.time() - start_create
-            print("    ✓ Калибровочный лист создан: " + safe_name)
-            print("    ⏱ Создание листа: {:.2f} сек".format(create_time))
         
         except Exception as ex:
             if sub_t.HasStarted() and not sub_t.HasEnded():
                 sub_t.RollBack()
             raise ex
         
-        # ========== 2. Экспорт ==========
         temp_dir = Path.Combine(Path.GetTempPath(), "revit_cal_" + str(System.Guid.NewGuid()))
         System.IO.Directory.CreateDirectory(temp_dir)
-        export_path = Path.Combine(temp_dir, "cal.png")
         
         opts = ImageExportOptions()
         opts.ZoomType = ZoomFitType.FitToPage
         opts.PixelSize = EXPORT_PIXELS
-        opts.FilePath = export_path
+        opts.FilePath = Path.Combine(temp_dir, "cal.png")
         opts.HLRandWFViewsFileType = ImageFileType.PNG
         opts.ExportRange = ExportRange.SetOfViews
         opts.ImageResolution = ImageResolution.DPI_150
         opts.SetViewsAndSheets([temp_sheet.Id])
         
         try:
-            start_export = time.time()
             doc.ExportImage(opts)
-            export_time = time.time() - start_export
-            print("    ✓ Экспорт выполнен")
-            print("    ⏱ Экспорт: {:.2f} сек".format(export_time))
-        except Exception as ex:
-            print("    ❌ Ошибка экспорта: " + str(ex))
-            print("      Возможные причины: недостаточно прав на запись, путь содержит недопустимые символы, Revit не может экспортировать изображение.")
-            # Сохраняем информацию об ошибке в отладочную папку
-            debug_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AutoView_debug")
-            if not os.path.exists(debug_dir):
-                os.makedirs(debug_dir)
-            error_log = os.path.join(debug_dir, "ERROR_export_" + str(view.Id.IntegerValue) + ".txt")
-            with open(error_log, 'w', encoding='utf-8') as f:
-                f.write("Ошибка экспорта вида: " + view.Name + "\n")
-                f.write(str(ex))
-            print("    Подробности сохранены в: " + error_log)
+        except Exception:
             return None
         
-        time.sleep(0.5)
+        time.sleep(0.3)
         
         png_files = System.IO.Directory.GetFiles(temp_dir, "*.png")
-        if not png_files or len(png_files) == 0:
-            print("    ❌ Файл экспорта не найден в папке: " + temp_dir)
-            print("      Возможные причины: Revit не создал файл, ошибка пути, антивирус заблокировал запись.")
-            # Сохраняем информацию об ошибке
-            debug_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AutoView_debug")
-            if not os.path.exists(debug_dir):
-                os.makedirs(debug_dir)
-            error_log = os.path.join(debug_dir, "ERROR_no_file_" + str(view.Id.IntegerValue) + ".txt")
-            with open(error_log, 'w', encoding='utf-8') as f:
-                f.write("Файл экспорта не найден для вида: " + view.Name + "\n")
-                f.write("Временная папка: " + temp_dir + "\n")
-                f.write("Проверьте, создался ли файл .png в этой папке.\n")
-            print("    Подробности сохранены в: " + error_log)
+        if not png_files:
             return None
         
-        exported_file = png_files[0]
-        print("    Файл: " + Path.GetFileName(exported_file))
-        
-        debug_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AutoView_debug")
-        if not os.path.exists(debug_dir):
-            os.makedirs(debug_dir)
-        
-        import shutil
-        safe_filename = sanitize_sheet_name(view.Name)[:30]
-        debug_copy = os.path.join(debug_dir, "cal_" + str(view.Id.IntegerValue) + "_" + safe_filename + ".png")
-        shutil.copy(exported_file, debug_copy)
-        print("    Копия сохранена в: " + debug_copy)
-        
-        # ========== 3. Анализ ==========
-        bitmap = Bitmap(exported_file)
+        bitmap = Bitmap(png_files[0])
         
         if bitmap.Width < 100 or bitmap.Height < 100:
-            print("    ❌ Изображение слишком маленькое: " + str(bitmap.Width) + "x" + str(bitmap.Height) + " px")
-            print("      Возможные причины: экспорт выполнен с низким разрешением, вид пуст, масштаб экспорта некорректен.")
-            print("      Рекомендации: увеличьте EXPORT_PIXELS, проверьте, что вид содержит геометрию.")
-            # Сохраняем информацию об ошибке
-            error_log = os.path.join(debug_dir, "ERROR_small_image_" + str(view.Id.IntegerValue) + ".txt")
-            with open(error_log, 'w', encoding='utf-8') as f:
-                f.write("Изображение слишком маленькое для вида: " + view.Name + "\n")
-                f.write("Размер: " + str(bitmap.Width) + "x" + str(bitmap.Height) + " px\n")
-                f.write("Файл: " + exported_file + "\n")
-            print("    Подробности сохранены в: " + error_log)
             return None
-        
-        print("    Размер изображения: " + str(bitmap.Width) + "x" + str(bitmap.Height) + " px")
-        
-        theme = detect_theme(bitmap)
-        
-        page_bounds = find_page_bounds(bitmap)
         
         squares = find_squares_by_edges(bitmap)
         
         if not squares or len(squares) < 2:
-            print("    ❌ Квадраты не найдены (найдено: " + str(len(squares) if squares else 0) + "). Возможные причины:")
-            print("      - Квадраты не видны на изображении (слишком маленькие, низкий контраст)")
-            print("      - Изображение слишком тёмное или светлое")
-            print("      - Квадраты перекрыты содержимым вида")
-            print("      - Алгоритм обнаружения не справился (попробуйте увеличить EXPORT_PIXELS)")
-            print("    Проверьте отладочное изображение в папке AutoView_debug.")
-            debug_fail = os.path.join(debug_dir, "FAIL_no_squares_" + str(view.Id.IntegerValue) + ".png")
-            try:
-                draw_debug_overlay(bitmap, squares if squares else [], None, [], debug_fail, page_bounds, mm_per_px=None)
-            except Exception as ex:
-                print("    ⚠️ Не удалось нарисовать отладку: " + str(ex))
-                bitmap.Save(debug_fail)
             return None
         
-        # Фиксированная калибровка: 1000px = 1500mm → 1.5 мм/пиксель
-        mm_per_px = MM_PER_PX  # 1.5 мм/пиксель
-        avg_square_size_px = 3  # 5мм × 0.67 px/мм ≈ 3px (новый размер квадрата)
-        print("    Квадратов найдено: " + str(len(squares)) + " (фиксированные координаты)")
-        print("    Калибровка: " + str(round(mm_per_px, 4)) + " мм/пиксель (фиксированная)")
-        print("    Размер квадрата: " + str(avg_square_size_px) + " px (5×5 мм)")
-        
-        # Проверка качества калибровки (информационная)
-        if avg_square_size_px < MIN_SQUARE_SIZE_PX or avg_square_size_px > MAX_SQUARE_SIZE_PX:
-            print("    ⚠️ Информация: фиксированный размер квадрата " + str(int(avg_square_size_px)) + " px выходит за ожидаемые пределы (" + str(MIN_SQUARE_SIZE_PX) + "-" + str(MAX_SQUARE_SIZE_PX) + " px).")
-        if mm_per_px < MIN_MM_PER_PX or mm_per_px > MAX_MM_PER_PX:
-            print("    ⚠️ Информация: фиксированный коэффициент калибровки " + str(round(mm_per_px, 4)) + " мм/пиксель выходит за ожидаемые пределы (" + str(MIN_MM_PER_PX) + "-" + str(MAX_MM_PER_PX) + ").")
+        mm_per_px = MM_PER_PX
         
         exclusion_zones = []
-        margin_px = int(avg_square_size_px * 0.7)
+        margin_px = 2
         
         for sq in squares:
             exclusion_zones.append((
@@ -1248,38 +682,11 @@ def measure_view_with_calibration(view, stats=None):
                 min(bitmap.Height - 1, sq['y'] + margin_px)
             ))
         
-        # Улучшаем изображение для лучшего обнаружения тонких линий
-        start_analysis = time.time()
         enhanced = enhance_bitmap(bitmap)
-        enhance_time = time.time() - start_analysis
-        # Сохраняем улучшенное изображение для отладки
-        enhanced_debug_path = os.path.join(debug_dir, "enhanced_" + str(view.Id.IntegerValue) + "_" + safe_filename + ".png")
-        try:
-            enhanced.Save(enhanced_debug_path)
-            print("    Улучшенное изображение сохранено: " + enhanced_debug_path)
-        except Exception as ex:
-            print("    ⚠️ Не удалось сохранить улучшенное изображение: " + str(ex))
-        start_find = time.time()
         content_bounds = find_content_bounds_3pass(enhanced, exclusion_zones)
-        find_time = time.time() - start_find
         enhanced.Dispose()
-        analysis_time = time.time() - start_analysis
-        print("    ⏱ Анализ: {:.2f} сек (enhance: {:.2f}, поиск: {:.2f})".format(
-            analysis_time, enhance_time, find_time))
         
         if not content_bounds:
-            print("    ❌ Содержимое не найдено. Возможные причины:")
-            print("      - Вид действительно пуст (нет геометрии)")
-            print("      - Контраст между содержимым и фоном недостаточен")
-            print("      - Содержимое перекрыто калибровочными квадратами (зоны исключения)")
-            print("      - Алгоритм обнаружения границ не справился (попробуйте увеличить контраст вида)")
-            print("    Проверьте отладочное изображение в папке AutoView_debug.")
-            debug_fail = os.path.join(debug_dir, "FAIL_no_content_" + str(view.Id.IntegerValue) + ".png")
-            try:
-                draw_debug_overlay(bitmap, squares, None, exclusion_zones, debug_fail, page_bounds, mm_per_px)
-            except Exception as ex:
-                print("    ⚠️ Не удалось нарисовать отладку: " + str(ex))
-                bitmap.Save(debug_fail)
             return None
         
         content_w_px = content_bounds['max_x'] - content_bounds['min_x'] + 1
@@ -1288,73 +695,44 @@ def measure_view_with_calibration(view, stats=None):
         content_w_mm = content_w_px * mm_per_px + 2 * PADDING_MM
         content_h_mm = content_h_px * mm_per_px + 2 * PADDING_MM
         
-        print("    Границы содержимого: " + str(content_w_px) + "x" + str(content_h_px) + " px")
-        print("    Размер вида: " + str(int(content_w_mm)) + "x" + str(int(content_h_mm)) + " мм (с отступами)")
-        
-        # Сохраняем отладку
-        safe_name = sanitize_sheet_name(view.Name)[:30]
-        debug_path = os.path.join(debug_dir, "OK_" + str(view.Id.IntegerValue) + "_" + safe_name + ".png")
-        try:
-            draw_debug_overlay(bitmap, squares, content_bounds, exclusion_zones, debug_path, page_bounds, mm_per_px)
-        except Exception as ex:
-            print("    ⚠️ Не удалось сохранить отмеченное изображение: " + str(ex))
-        
         if content_w_mm < 10 or content_h_mm < 10:
-            print("    ⚠️ Размер слишком маленький")
             return None
         
-        # Сохраняем результат в кэш
         VIEW_SIZE_CACHE[view_id] = (content_w_mm, content_h_mm)
         
-        total_time = time.time() - start_total
-        print("    ⏱ Общее время анализа: {:.2f} сек".format(total_time))
-        
-        # Сохраняем статистику, если передан словарь
-        if stats is not None:
-            # Если stats имеет ключ 'times', добавляем время в список
-            if 'times' in stats:
-                stats['times'].append(total_time)
-            else:
-                stats['analysis_time'] = total_time
+        if stats is not None and 'times' in stats:
+            stats['times'].append(time.time() - start_total)
         
         return (content_w_mm, content_h_mm)
     
-    except Exception as e:
-        print("  ❌ Ошибка анализа: " + str(e))
-        import traceback
-        traceback.print_exc()
+    except Exception:
         return None
     
     finally:
         if bitmap:
             try:
                 bitmap.Dispose()
-            except:
+            except Exception:
                 pass
         
         if temp_sheet:
             try:
-                element = doc.GetElement(temp_sheet.Id)
-                if element is not None and doc.IsModifiable:
-                    sub_t2 = SubTransaction(doc)
-                    sub_t2.Start()
+                el = doc.GetElement(temp_sheet.Id)
+                if el is not None and doc.IsModifiable:
+                    st = SubTransaction(doc)
+                    st.Start()
                     try:
-                        start_delete = time.time()
                         doc.Delete(temp_sheet.Id)
-                        sub_t2.Commit()
-                        delete_time = time.time() - start_delete
-                        print("    ✓ Временный лист удалён")
-                        print("    ⏱ Удаление листа: {:.2f} сек".format(delete_time))
-                    except:
-                        sub_t2.RollBack()
-                        print("    ⚠️ Не удалось удалить временный лист")
-            except:
+                        st.Commit()
+                    except Exception:
+                        st.RollBack()
+            except Exception:
                 pass
         
         if temp_dir:
             try:
                 System.IO.Directory.Delete(temp_dir, True)
-            except:
+            except Exception:
                 pass
 
 
@@ -1372,11 +750,9 @@ class MaxRectsPacker:
                 self._add_occupied(ox, oy, ow, oh)
 
     def _add_occupied(self, x, y, w, h):
-        """Добавить занятый прямоугольник, вырезая его из свободных областей."""
         new_free = []
         for (fx, fy, fw, fh) in self.free_rects:
             if not (x >= fx + fw or x + w <= fx or y >= fy + fh or y + h <= fy):
-                # Пересекаются, вырезаем
                 if x > fx:
                     new_free.append((fx, fy, x - fx, fh))
                 if x + w < fx + fw:
@@ -1450,104 +826,425 @@ def pack_rectangles(rects, bin_width, bin_height, occupied_rects=None):
     if not rects or bin_width <= 0 or bin_height <= 0:
         return []
     
-    strategies = [
-        lambda r: max(r[0], r[1]),
-        lambda r: r[0] * r[1],
-        lambda r: r[0],
-        lambda r: r[1],
-    ]
-    
+    strategies = [lambda r: max(r[0], r[1]), lambda r: r[0]*r[1], lambda r: r[0], lambda r: r[1]]
     heuristics = ['area', 'short_side', 'long_side']
-    
-    best_result = []
-    best_count = 0
-    best_fill = 0
+    best_result, best_count, best_fill = [], 0, 0
     
     for key_func in strategies:
         sorted_rects = sorted(rects, key=key_func, reverse=True)
-        
         for heuristic in heuristics:
             packer = MaxRectsPacker(bin_width, bin_height, occupied_rects)
-            
             for w, h, item_id in sorted_rects:
                 if w <= bin_width and h <= bin_height:
                     packer.add_rect(w, h, item_id, heuristic)
             
             placements = packer.get_placements()
-            placed_count = len(placements)
-            
-            if placed_count == 0:
+            if len(placements) == 0:
                 continue
             
-            total_area = sum(w * h for _, _, w, h, _ in placements)
-            fill_ratio = total_area / (bin_width * bin_height)
-            
-            if placed_count > best_count or (placed_count == best_count and fill_ratio > best_fill):
-                best_result = placements
-                best_count = placed_count
-                best_fill = fill_ratio
+            fill = sum(w*h for _, _, w, h, _ in placements) / (bin_width * bin_height)
+            if len(placements) > best_count or (len(placements) == best_count and fill > best_fill):
+                best_result, best_count, best_fill = placements, len(placements), fill
     
     return best_result
 
 
 def find_best_fill(rects, bin_w, bin_h, occupied_rects=None):
-    """
-    Подбирает оптимальную комбинацию прямоугольников для ОДНОГО листа.
-    Перебирает варианты, выбирает с максимальным количеством и заполнением.
-    """
     if not rects:
         return []
     
-    # Сортируем по площади (большие primero)
     sorted_rects = sorted(rects, key=lambda r: r[0]*r[1], reverse=True)
+    best_placements, best_count, best_fill = [], 0, 0
     
-    best_placements = []
-    best_count = 0
-    best_fill = 0
-    
-    # Шаг перебора: не все комбинации, а с адаптивным шагом
     total_rects = len(sorted_rects)
     step = max(1, total_rects // 15)
     
     for start in range(0, total_rects, step):
-        for count in range(1, total_rects - start + 1):  # минимум 1 вид на лист
+        for count in range(1, total_rects - start + 1):
             subset = sorted_rects[start:start + count]
-            
-            # Быстрый фильтр по площади
-            total_area = sum(w*h for w, h, _ in subset)
-            if total_area > bin_w * bin_h * 1.3:
+            if sum(w*h for w, h, _ in subset) > bin_w * bin_h * 1.3:
                 break
             
             placements = pack_rectangles(subset, bin_w, bin_h, occupied_rects)
-            placed_count = len(placements)
+            if len(placements) == 0:
+                continue
             
-            if placed_count > best_count:
-                best_placements = placements
-                best_count = placed_count
-                best_fill = sum(w*h for _, _, w, h, _ in placements) / (bin_w * bin_h)
-            elif placed_count == best_count:
-                fill = sum(w*h for _, _, w, h, _ in placements) / (bin_w * bin_h)
-                if fill > best_fill:
-                    best_placements = placements
-                    best_fill = fill
+            fill = sum(w*h for _, _, w, h, _ in placements) / (bin_w * bin_h)
+            if len(placements) > best_count or (len(placements) == best_count and fill > best_fill):
+                best_placements, best_count, best_fill = placements, len(placements), fill
     
     return best_placements
+
+
+# ============ АНИМАЦИИ ============
+
+def get_revit_theme_color():
+    try:
+        bg_color = app.ApplicationTheme.BackgroundColor
+        return Color.FromArgb(bg_color.R, bg_color.G, bg_color.B)
+    except Exception:
+        return Color.FromArgb(30, 30, 35)
+
+
+def is_dark_theme(bg_color):
+    return (bg_color.R + bg_color.G + bg_color.B) / 3 < 128
+
+
+def get_text_color(bg_color):
+    return Color.White if is_dark_theme(bg_color) else Color.Black
+
+
+def get_subtext_color(bg_color):
+    return Color.FromArgb(180, 180, 180) if is_dark_theme(bg_color) else Color.FromArgb(60, 60, 60)
+
+
+def show_search_animation(message="Поиск видов в проекте..."):
+    bg_color = get_revit_theme_color()
+    dark_bg = Color.FromArgb(
+        max(0, bg_color.R - 20), max(0, bg_color.G - 20), max(0, bg_color.B - 20)
+    )
+    
+    form = Form()
+    form.Text = "Размещение видов"
+    form.Size = Size(350, 220)
+    form.StartPosition = FormStartPosition.CenterScreen
+    form.FormBorderStyle = FormBorderStyle.FixedDialog
+    form.MaximizeBox = False
+    form.MinimizeBox = False
+    form.BackColor = dark_bg
+    form.ControlBox = False
+    
+    anim_panel = Panel()
+    anim_panel.Location = Point(0, 15)
+    anim_panel.Size = Size(350, 70)
+    anim_panel.BackColor = Color.Transparent
+    form.Controls.Add(anim_panel)
+    
+    # Состояние пульсации через список (IronPython не поддерживает nonlocal)
+    pulse_state = [0]
+    pulse_dir = [1]
+    
+    def draw_pulse(state):
+        if form.IsDisposed:
+            return
+        try:
+            g = anim_panel.CreateGraphics()
+            g.Clear(dark_bg)
+            cx, cy = 175, 35
+            r = 12 + state * 4
+            alpha = 200 - state * 40
+            color = Color.FromArgb(alpha, 100, 180, 255)
+            brush = SolidBrush(color)
+            g.FillEllipse(brush, cx - r, cy - r, r*2, r*2)
+            g.Dispose()
+        except Exception:
+            pass
+    
+    def pulse_tick(s, e):
+        pulse_state[0] += pulse_dir[0]
+        if pulse_state[0] >= 3:
+            pulse_dir[0] = -1
+        elif pulse_state[0] <= 0:
+            pulse_dir[0] = 1
+        draw_pulse(pulse_state[0])
+    
+    timer = Timer()
+    timer.Interval = 150
+    timer.Tick += pulse_tick
+    timer.Start()
+    
+    label = Label()
+    label.Text = message
+    label.Location = Point(0, 95)
+    label.Size = Size(350, 30)
+    label.Font = Font("Arial", 10, FontStyle.Regular)
+    label.ForeColor = get_text_color(bg_color)
+    label.TextAlign = ContentAlignment.MiddleCenter
+    form.Controls.Add(label)
+    
+    sublabel = Label()
+    sublabel.Text = ""
+    sublabel.Location = Point(0, 130)
+    sublabel.Size = Size(350, 25)
+    sublabel.Font = Font("Arial", 8, FontStyle.Regular)
+    sublabel.ForeColor = get_subtext_color(bg_color)
+    sublabel.TextAlign = ContentAlignment.MiddleCenter
+    form.Controls.Add(sublabel)
+    
+    form.Show()
+    form.Refresh()
+    draw_pulse(0)
+    
+    return form, label, sublabel, timer
+
+
+def update_search_text(form, label, sublabel, text):
+    if form and not form.IsDisposed and label:
+        try:
+            label.Text = text
+            form.Refresh()
+        except Exception:
+            pass
+
+
+def close_search_animation(form, timer=None):
+    if timer:
+        try:
+            timer.Stop()
+        except Exception:
+            pass
+    if form and not form.IsDisposed:
+        try:
+            form.Close()
+        except Exception:
+            pass
+
+
+def show_progress_panel(message="Размещение видов"):
+    bg_color = get_revit_theme_color()
+    dark_bg = Color.FromArgb(
+        max(0, bg_color.R - 20), max(0, bg_color.G - 20), max(0, bg_color.B - 20)
+    )
+    panel_bg = Color.FromArgb(
+        max(0, bg_color.R - 10), max(0, bg_color.G - 10), max(0, bg_color.B - 10)
+    )
+    
+    form = Form()
+    form.Text = message
+    form.Size = Size(500, 300)
+    form.StartPosition = FormStartPosition.CenterScreen
+    form.FormBorderStyle = FormBorderStyle.FixedDialog
+    form.MaximizeBox = False
+    form.MinimizeBox = False
+    form.BackColor = dark_bg
+    form.ControlBox = False
+    
+    title = Label()
+    title.Text = message
+    title.Location = Point(0, 15)
+    title.Size = Size(500, 30)
+    title.Font = Font("Arial", 12, FontStyle.Bold)
+    title.ForeColor = get_text_color(bg_color)
+    title.TextAlign = ContentAlignment.MiddleCenter
+    form.Controls.Add(title)
+    
+    grid = Panel()
+    grid.Location = Point(30, 55)
+    grid.Size = Size(440, 140)
+    grid.BackColor = panel_bg
+    form.Controls.Add(grid)
+    
+    stage = Label()
+    stage.Text = "Подготовка..."
+    stage.Location = Point(0, 205)
+    stage.Size = Size(500, 20)
+    stage.Font = Font("Arial", 9)
+    stage.ForeColor = get_subtext_color(bg_color)
+    stage.TextAlign = ContentAlignment.MiddleCenter
+    form.Controls.Add(stage)
+    
+    progress = ProgressBar()
+    progress.Location = Point(30, 235)
+    progress.Size = Size(440, 15)
+    progress.Style = ProgressBarStyle.Marquee
+    progress.MarqueeAnimationSpeed = 25
+    form.Controls.Add(progress)
+    
+    pct = Label()
+    pct.Text = ""
+    pct.Location = Point(0, 255)
+    pct.Size = Size(500, 20)
+    pct.Font = Font("Arial", 8, FontStyle.Bold)
+    pct.ForeColor = Color.FromArgb(100, 200, 100)
+    pct.TextAlign = ContentAlignment.MiddleCenter
+    form.Controls.Add(pct)
+    
+    form.Show()
+    form.Refresh()
+    
+    return form, grid, stage, progress, pct
+
+
+def update_grid(form, grid, views_data, current_idx, completed):
+    if form.IsDisposed:
+        return
+    grid.Controls.Clear()
+    cols, size, gap = 6, 55, 8
+    
+    for i, (view, group) in enumerate(views_data):
+        col, row = i % cols, i // cols
+        x, y = 10 + col * (size + gap), 10 + row * (size + gap)
+        
+        box = Panel()
+        box.Location = Point(x, y)
+        box.Size = Size(size, size)
+        box.BorderStyle = BorderStyle.FixedSingle
+        
+        if i < completed:
+            box.BackColor = Color.FromArgb(60, 180, 75)
+        elif i == current_idx:
+            box.BackColor = Color.FromArgb(255, 180, 30)
+        else:
+            box.BackColor = Color.FromArgb(60, 60, 68)
+        
+        lbl = Label()
+        lbl.Text = str(i + 1)
+        lbl.Location = Point(0, 0)
+        lbl.Size = Size(size, size)
+        lbl.Font = Font("Arial", 9, FontStyle.Bold)
+        lbl.ForeColor = Color.White
+        lbl.TextAlign = ContentAlignment.MiddleCenter
+        box.Controls.Add(lbl)
+        grid.Controls.Add(box)
+    
+    form.Refresh()
+
+
+def update_progress_info(form, stage, progress, pct, stage_text, percent_text=""):
+    if form.IsDisposed:
+        return
+    stage.Text = stage_text
+    if percent_text:
+        pct.Text = percent_text
+        progress.Style = ProgressBarStyle.Blocks
+        try:
+            val = int(percent_text.replace("%", ""))
+            progress.Value = min(100, max(0, val))
+        except Exception:
+            pass
+    form.Refresh()
+
+
+def show_results_form(sheet_count, total_placed, skipped_views, failed, total_time):
+    bg_color = get_revit_theme_color()
+    dark_bg = Color.FromArgb(
+        max(0, bg_color.R - 20), max(0, bg_color.G - 20), max(0, bg_color.B - 20)
+    )
+    txt_color = get_text_color(bg_color)
+    sub_color = get_subtext_color(bg_color)
+    
+    form = Form()
+    form.Text = "Результаты размещения"
+    form.Size = Size(450, 400)
+    form.StartPosition = FormStartPosition.CenterScreen
+    form.FormBorderStyle = FormBorderStyle.FixedDialog
+    form.MaximizeBox = False
+    form.MinimizeBox = False
+    form.BackColor = dark_bg
+    
+    y = 20
+    
+    title = Label()
+    title.Text = "✅ Размещение завершено!"
+    title.Location = Point(0, y)
+    title.Size = Size(450, 30)
+    title.Font = Font("Arial", 12, FontStyle.Bold)
+    title.ForeColor = Color.FromArgb(100, 200, 100)
+    title.TextAlign = ContentAlignment.MiddleCenter
+    form.Controls.Add(title)
+    y += 45
+    
+    stats = [
+        ("Создано листов:", str(sheet_count)),
+        ("Размещено видов:", str(total_placed)),
+    ]
+    if skipped_views:
+        stats.append(("Пропущено видов:", str(len(skipped_views))))
+    if failed:
+        stats.append(("Не проанализировано:", str(len(failed))))
+    if CREATION_WARNINGS:
+        stats.append(("Предупреждений:", str(len(CREATION_WARNINGS))))
+    stats.append(("Общее время:", str(round(total_time, 1)) + " сек"))
+    
+    for label_text, value in stats:
+        lbl = Label()
+        lbl.Text = label_text
+        lbl.Location = Point(50, y)
+        lbl.Size = Size(200, 25)
+        lbl.Font = Font("Arial", 10)
+        lbl.ForeColor = sub_color
+        lbl.TextAlign = ContentAlignment.MiddleRight
+        form.Controls.Add(lbl)
+        
+        val = Label()
+        val.Text = value
+        val.Location = Point(255, y)
+        val.Size = Size(120, 25)
+        val.Font = Font("Arial", 10, FontStyle.Bold)
+        val.ForeColor = txt_color
+        val.TextAlign = ContentAlignment.MiddleLeft
+        form.Controls.Add(val)
+        y += 30
+    
+    y += 15
+    
+    # Кнопка копирования логов
+    def copy_logs(s, e):
+        if LOG_COLLECTOR:
+            log_text = "\n".join(LOG_COLLECTOR)
+            try:
+                Clipboard.SetText(log_text)
+                MessageBox.Show("Логи скопированы в буфер обмена!", "Логи")
+            except Exception:
+                log_form = Form()
+                log_form.Text = "Логи выполнения"
+                log_form.Size = Size(600, 400)
+                log_form.StartPosition = FormStartPosition.CenterScreen
+                
+                log_box = TextBox()
+                log_box.Multiline = True
+                log_box.ScrollBars = System.Windows.Forms.ScrollBars.Vertical
+                log_box.Text = log_text
+                log_box.Dock = System.Windows.Forms.DockStyle.Fill
+                log_box.Font = Font("Consolas", 9)
+                log_box.ReadOnly = True
+                log_form.Controls.Add(log_box)
+                
+                log_form.ShowDialog()
+        else:
+            MessageBox.Show("Логи пусты", "Логи")
+    
+    btn_logs = Button()
+    btn_logs.Text = "📋 Копировать логи"
+    btn_logs.Location = Point(60, y)
+    btn_logs.Size = Size(140, 35)
+    btn_logs.Font = Font("Arial", 9, FontStyle.Bold)
+    btn_logs.BackColor = Color.FromArgb(60, 80, 120)
+    btn_logs.ForeColor = Color.White
+    btn_logs.FlatStyle = FlatStyle.Flat
+    btn_logs.Click += copy_logs
+    form.Controls.Add(btn_logs)
+    
+    btn_ok = Button()
+    btn_ok.Text = "OK"
+    btn_ok.Location = Point(240, y)
+    btn_ok.Size = Size(120, 35)
+    btn_ok.Font = Font("Arial", 10, FontStyle.Bold)
+    btn_ok.BackColor = Color.FromArgb(60, 180, 75)
+    btn_ok.ForeColor = Color.White
+    btn_ok.FlatStyle = FlatStyle.Flat
+    btn_ok.Click += lambda s, e: form.Close()
+    form.Controls.Add(btn_ok)
+    
+    form.ShowDialog()
 
 
 # ============ ФОРМА НАСТРОЙКИ ГРУПП ============
 
 def show_group_config_form():
-    """Показывает форму настройки групп систем."""
+    bg_color = get_revit_theme_color()
+    txt_color = get_text_color(bg_color)
+    
     form = Form()
     form.Text = "Настройка групп систем"
-    form.Size = Size(860, 380)
+    form.Size = Size(860, 410)
     form.StartPosition = FormStartPosition.CenterScreen
     form.FormBorderStyle = FormBorderStyle.FixedDialog
     form.MaximizeBox = False
     form.MinimizeBox = False
+    form.BackColor = bg_color
     
-    result = {'grouping': None}
-    
+    result = {'grouping': None, 'show_logs': False}
     y = 10
     
     title = Label()
@@ -1555,19 +1252,22 @@ def show_group_config_form():
     title.Location = Point(10, y)
     title.Size = Size(830, 25)
     title.Font = Font("Arial", 10, FontStyle.Bold)
+    title.ForeColor = txt_color
     form.Controls.Add(title)
     y += 30
     
-    # Панель с группами
     panel = Panel()
     panel.Location = Point(10, y)
     panel.Size = Size(830, 220)
     panel.BorderStyle = BorderStyle.FixedSingle
     panel.AutoScroll = True
+    panel.BackColor = Color.FromArgb(
+        max(0, bg_color.R - 15), max(0, bg_color.G - 15), max(0, bg_color.B - 15)
+    )
     form.Controls.Add(panel)
     
-    group_combos = []  # список списков ComboBox для каждой группы
-    group_name_boxes = []  # TextBox для названий групп
+    group_combos = []
+    group_name_boxes = []
     
     inner_y = 10
     for group_idx in range(5):
@@ -1576,6 +1276,7 @@ def show_group_config_form():
         group_label.Location = Point(10, inner_y)
         group_label.Size = Size(60, 20)
         group_label.Font = Font("Arial", 8, FontStyle.Regular)
+        group_label.ForeColor = txt_color
         panel.Controls.Add(group_label)
         
         row_combos = []
@@ -1590,7 +1291,6 @@ def show_group_config_form():
             for prefix in ALL_PREFIXES:
                 cb.Items.Add(prefix)
             
-            # Заполняем значения по умолчанию
             if group_idx < len(DEFAULT_GROUPING):
                 default_prefixes = list(DEFAULT_GROUPING.values())[group_idx]
                 if i < len(default_prefixes):
@@ -1602,7 +1302,6 @@ def show_group_config_form():
             
             panel.Controls.Add(cb)
             row_combos.append(cb)
-            
             combo_x += 50
             if i < 9:
                 plus_label = Label()
@@ -1610,17 +1309,18 @@ def show_group_config_form():
                 plus_label.Location = Point(combo_x + 2, inner_y)
                 plus_label.Size = Size(10, 20)
                 plus_label.Font = Font("Arial", 8)
+                plus_label.ForeColor = txt_color
                 panel.Controls.Add(plus_label)
                 combo_x += 8
         
         group_combos.append(row_combos)
         
-        # Название группы
         name_label = Label()
         name_label.Text = "Название:"
         name_label.Location = Point(combo_x + 8, inner_y)
         name_label.Size = Size(60, 20)
         name_label.Font = Font("Arial", 8)
+        name_label.ForeColor = txt_color
         panel.Controls.Add(name_label)
         
         name_box = TextBox()
@@ -1631,17 +1331,16 @@ def show_group_config_form():
             name_box.Text = GROUP_NAMES_DEFAULT[group_idx]
         panel.Controls.Add(name_box)
         group_name_boxes.append(name_box)
-        
         inner_y += 25
     
     y += 230
     
-    # Кнопки пресетов
     presets_label = Label()
     presets_label.Text = "Быстрые пресеты:"
     presets_label.Location = Point(10, y)
     presets_label.Size = Size(120, 20)
     presets_label.Font = Font("Arial", 8, FontStyle.Bold)
+    presets_label.ForeColor = txt_color
     form.Controls.Add(presets_label)
     
     def apply_preset(preset_name):
@@ -1649,22 +1348,16 @@ def show_group_config_form():
             "П+В, ДП+ДВ, А+У": [
                 (["П", "ПЕ", "В", "ВЕ"], "П-В"),
                 (["ДП", "ДПЕ", "ДВ", "ДВЕ"], "ДП-ДВ"),
-                (["А", "У"], "А-У"),
-                ([], ""),
-                ([], ""),
+                (["А", "У"], "А-У"), ([], ""), ([], ""),
             ],
             "П, В, ДП+ДВ, А+У": [
-                (["П", "ПЕ"], "П"),
-                (["В", "ВЕ"], "В"),
+                (["П", "ПЕ"], "П"), (["В", "ВЕ"], "В"),
                 (["ДП", "ДПЕ", "ДВ", "ДВЕ"], "ДП-ДВ"),
-                (["А", "У"], "А-У"),
-                ([], ""),
+                (["А", "У"], "А-У"), ([], ""),
             ],
             "П, В, ДП, ДВ, А, У": [
-                (["П", "ПЕ"], "П"),
-                (["В", "ВЕ"], "В"),
-                (["ДП", "ДПЕ"], "ДП"),
-                (["ДВ", "ДВЕ"], "ДВ"),
+                (["П", "ПЕ"], "П"), (["В", "ВЕ"], "В"),
+                (["ДП", "ДПЕ"], "ДП"), (["ДВ", "ДВЕ"], "ДВ"),
                 (["А", "У"], "А-У"),
             ],
         }
@@ -1688,7 +1381,16 @@ def show_group_config_form():
         form.Controls.Add(btn)
         preset_x += 190
     
-    y += 35
+    y += 30
+    
+    chk_logs = CheckBox()
+    chk_logs.Text = "Показывать логи в терминале"
+    chk_logs.Location = Point(10, y)
+    chk_logs.Size = Size(250, 20)
+    chk_logs.Font = Font("Arial", 8)
+    chk_logs.ForeColor = txt_color
+    chk_logs.Checked = False
+    form.Controls.Add(chk_logs)
     
     def on_ok(s, e):
         new_grouping = OrderedDict()
@@ -1702,6 +1404,7 @@ def show_group_config_form():
                 new_grouping[name] = prefixes
         if new_grouping:
             result['grouping'] = new_grouping
+            result['show_logs'] = chk_logs.Checked
             form.DialogResult = DialogResult.OK
             form.Close()
         else:
@@ -1713,7 +1416,7 @@ def show_group_config_form():
     
     btn_ok = Button()
     btn_ok.Text = "▶ Продолжить"
-    btn_ok.Location = Point(350, y)
+    btn_ok.Location = Point(350, y + 5)
     btn_ok.Size = Size(140, 35)
     btn_ok.Font = Font("Arial", 10, FontStyle.Bold)
     btn_ok.BackColor = Color.LightGreen
@@ -1722,7 +1425,7 @@ def show_group_config_form():
     
     btn_cancel = Button()
     btn_cancel.Text = "По умолчанию"
-    btn_cancel.Location = Point(500, y)
+    btn_cancel.Location = Point(500, y + 5)
     btn_cancel.Size = Size(140, 35)
     btn_cancel.Font = Font("Arial", 9)
     btn_cancel.Click += on_cancel
@@ -1731,23 +1434,27 @@ def show_group_config_form():
     form.ShowDialog()
     
     if result['grouping'] is not None:
-        return result['grouping']
-    return None
+        return result['grouping'], result['show_logs']
+    return None, False
 
 
 # ============ WINFORMS UI ============
 
 def show_placement_form(views_data, sheet_w, sheet_h):
+    bg_color = get_revit_theme_color()
+    txt_color = get_text_color(bg_color)
+    sub_color = get_subtext_color(bg_color)
+    
     form = Form()
-    form.Text = "Размещение видов на листы v5.0"
+    form.Text = "Размещение видов на листы v6.1"
     form.Size = Size(680, 650)
     form.StartPosition = FormStartPosition.CenterScreen
     form.FormBorderStyle = FormBorderStyle.FixedDialog
     form.MaximizeBox = False
     form.MinimizeBox = False
+    form.BackColor = bg_color
     
     result = {'views': None, 'settings': None}
-    
     y = 10
     
     title = Label()
@@ -1755,15 +1462,16 @@ def show_placement_form(views_data, sheet_w, sheet_h):
     title.Location = Point(10, y)
     title.Size = Size(640, 25)
     title.Font = Font("Arial", 10, FontStyle.Bold)
+    title.ForeColor = txt_color
     form.Controls.Add(title)
     y += 30
     
     info = Label()
-    info.Text = "Лист-шаблон: " + str(int(sheet_w)) + " x " + str(int(sheet_h)) + " мм | Доступно видов: " + str(len(views_data))
+    info.Text = "Лист: " + str(int(sheet_w)) + "x" + str(int(sheet_h)) + " мм | Видов: " + str(len(views_data))
     info.Location = Point(10, y)
     info.Size = Size(640, 20)
     info.Font = Font("Arial", 8)
-    info.ForeColor = Color.Gray
+    info.ForeColor = sub_color
     form.Controls.Add(info)
     y += 25
     
@@ -1772,6 +1480,9 @@ def show_placement_form(views_data, sheet_w, sheet_h):
     panel.Size = Size(640, 280)
     panel.BorderStyle = BorderStyle.FixedSingle
     panel.AutoScroll = True
+    panel.BackColor = Color.FromArgb(
+        max(0, bg_color.R - 10), max(0, bg_color.G - 10), max(0, bg_color.B - 10)
+    )
     form.Controls.Add(panel)
     
     inner_y = 10
@@ -1781,14 +1492,13 @@ def show_placement_form(views_data, sheet_w, sheet_h):
         if group_name != current_group:
             if current_group is not None:
                 inner_y += 5
-            
-            group_label = Label()
-            group_label.Text = "━━━ " + group_name + " ━━━"
-            group_label.Location = Point(10, inner_y)
-            group_label.Size = Size(600, 22)
-            group_label.Font = Font("Arial", 9, FontStyle.Bold)
-            group_label.ForeColor = Color.DarkBlue
-            panel.Controls.Add(group_label)
+            gl = Label()
+            gl.Text = "━━━ " + group_name + " ━━━"
+            gl.Location = Point(10, inner_y)
+            gl.Size = Size(600, 22)
+            gl.Font = Font("Arial", 9, FontStyle.Bold)
+            gl.ForeColor = Color.DarkBlue if not is_dark_theme(bg_color) else Color.FromArgb(100, 180, 255)
+            panel.Controls.Add(gl)
             inner_y += 27
             current_group = group_name
         
@@ -1797,6 +1507,7 @@ def show_placement_form(views_data, sheet_w, sheet_h):
         cb.Location = Point(30, inner_y)
         cb.Size = Size(580, 20)
         cb.Font = Font("Arial", 8)
+        cb.ForeColor = txt_color
         cb.Tag = view
         cb.Checked = True
         panel.Controls.Add(cb)
@@ -1804,29 +1515,29 @@ def show_placement_form(views_data, sheet_w, sheet_h):
     
     y += 290
     
-    def on_select_all(s, e):
-        for ctrl in panel.Controls:
-            if isinstance(ctrl, CheckBox):
-                ctrl.Checked = True
+    def select_all(s, e):
+        for c in panel.Controls:
+            if isinstance(c, CheckBox):
+                c.Checked = True
     
-    def on_deselect_all(s, e):
-        for ctrl in panel.Controls:
-            if isinstance(ctrl, CheckBox):
-                ctrl.Checked = False
+    def deselect_all(s, e):
+        for c in panel.Controls:
+            if isinstance(c, CheckBox):
+                c.Checked = False
     
-    btn_select = Button()
-    btn_select.Text = "✓ Выбрать все"
-    btn_select.Location = Point(10, y)
-    btn_select.Size = Size(130, 30)
-    btn_select.Click += on_select_all
-    form.Controls.Add(btn_select)
+    b1 = Button()
+    b1.Text = "✓ Все"
+    b1.Location = Point(10, y)
+    b1.Size = Size(100, 30)
+    b1.Click += select_all
+    form.Controls.Add(b1)
     
-    btn_deselect = Button()
-    btn_deselect.Text = "✗ Снять все"
-    btn_deselect.Location = Point(150, y)
-    btn_deselect.Size = Size(130, 30)
-    btn_deselect.Click += on_deselect_all
-    form.Controls.Add(btn_deselect)
+    b2 = Button()
+    b2.Text = "✗ Снять"
+    b2.Location = Point(120, y)
+    b2.Size = Size(100, 30)
+    b2.Click += deselect_all
+    form.Controls.Add(b2)
     y += 40
     
     gb = GroupBox()
@@ -1834,237 +1545,188 @@ def show_placement_form(views_data, sheet_w, sheet_h):
     gb.Location = Point(10, y)
     gb.Size = Size(640, 105)
     gb.Font = Font("Arial", 8, FontStyle.Bold)
+    gb.ForeColor = txt_color
     form.Controls.Add(gb)
     
-    lbl_mx = Label(); lbl_mx.Text = "Отступ X:"; lbl_mx.Location = Point(15, 25); lbl_mx.Size = Size(65, 20); lbl_mx.Font = Font("Arial", 8); gb.Controls.Add(lbl_mx)
-    tb_margin_x = TextBox(); tb_margin_x.Text = "20"; tb_margin_x.Location = Point(80, 22); tb_margin_x.Size = Size(45, 20); gb.Controls.Add(tb_margin_x)
+    # Исправленные координаты для полей
+    field_defs = [
+        ("Отступ X:", 15, "20", 80),
+        ("Отступ Y:", 140, "20", 205),
+        ("Зазор X:", 270, "15", 325),
+        ("Зазор Y:", 390, "15", 445),
+        ("Штамп:", 510, "60", 560),
+    ]
     
-    lbl_my = Label(); lbl_my.Text = "Отступ Y:"; lbl_my.Location = Point(140, 25); lbl_my.Size = Size(65, 20); lbl_my.Font = Font("Arial", 8); gb.Controls.Add(lbl_my)
-    tb_margin_y = TextBox(); tb_margin_y.Text = "20"; tb_margin_y.Location = Point(205, 22); tb_margin_y.Size = Size(45, 20); gb.Controls.Add(tb_margin_y)
+    textboxes = {}
+    for lbl_text, lbl_x, default_val, tb_x in field_defs:
+        lbl = Label()
+        lbl.Text = lbl_text
+        lbl.Location = Point(lbl_x, 25)
+        lbl.Size = Size(65, 20)
+        lbl.Font = Font("Arial", 8)
+        lbl.ForeColor = txt_color
+        gb.Controls.Add(lbl)
+        
+        tb = TextBox()
+        tb.Text = default_val
+        tb.Location = Point(tb_x, 22)
+        tb.Size = Size(45, 20)
+        gb.Controls.Add(tb)
+        textboxes[lbl_text.replace(":", "")] = tb
     
-    lbl_gx = Label(); lbl_gx.Text = "Зазор X:"; lbl_gx.Location = Point(270, 25); lbl_gx.Size = Size(55, 20); lbl_gx.Font = Font("Arial", 8); gb.Controls.Add(lbl_gx)
-    tb_gap_x = TextBox(); tb_gap_x.Text = "15"; tb_gap_x.Location = Point(325, 22); tb_gap_x.Size = Size(45, 20); gb.Controls.Add(tb_gap_x)
+    lpf = Label()
+    lpf.Text = "Префикс:"
+    lpf.Location = Point(15, 55)
+    lpf.Size = Size(65, 20)
+    lpf.Font = Font("Arial", 8)
+    lpf.ForeColor = txt_color
+    gb.Controls.Add(lpf)
     
-    lbl_gy = Label(); lbl_gy.Text = "Зазор Y:"; lbl_gy.Location = Point(390, 25); lbl_gy.Size = Size(55, 20); lbl_gy.Font = Font("Arial", 8); gb.Controls.Add(lbl_gy)
-    tb_gap_y = TextBox(); tb_gap_y.Text = "15"; tb_gap_y.Location = Point(445, 22); tb_gap_y.Size = Size(45, 20); gb.Controls.Add(tb_gap_y)
-    
-    lbl_tb = Label(); lbl_tb.Text = "Штамп:"; lbl_tb.Location = Point(510, 25); lbl_tb.Size = Size(50, 20); lbl_tb.Font = Font("Arial", 8); gb.Controls.Add(lbl_tb)
-    tb_titleblock = TextBox(); tb_titleblock.Text = "60"; tb_titleblock.Location = Point(560, 22); tb_titleblock.Size = Size(45, 20); gb.Controls.Add(tb_titleblock)
-    
-    lbl_prefix = Label(); lbl_prefix.Text = "Префикс имени:"; lbl_prefix.Location = Point(15, 55); lbl_prefix.Size = Size(100, 20); lbl_prefix.Font = Font("Arial", 8); gb.Controls.Add(lbl_prefix)
-    tb_prefix = TextBox(); tb_prefix.Text = ""; tb_prefix.Location = Point(120, 52); tb_prefix.Size = Size(200, 20); gb.Controls.Add(tb_prefix)
-    
-    lbl_hint = Label(); lbl_hint.Text = "мм | Все значения >= 0 | Пустой префикс = авто"; lbl_hint.Location = Point(15, 80); lbl_hint.Size = Size(600, 20); lbl_hint.Font = Font("Arial", 7); lbl_hint.ForeColor = Color.Gray; gb.Controls.Add(lbl_hint)
+    tpf = TextBox()
+    tpf.Text = ""
+    tpf.Location = Point(80, 52)
+    tpf.Size = Size(200, 20)
+    gb.Controls.Add(tpf)
     
     y += 115
     
-    def on_ok(s, e):
-        selected = []
-        for ctrl in panel.Controls:
-            if isinstance(ctrl, CheckBox) and ctrl.Checked and ctrl.Tag:
-                selected.append(ctrl.Tag)
-        
-        if not selected:
-            MessageBox.Show("Не выбрано ни одного вида!", "Предупреждение")
+    def ok(s, e):
+        sel = [c.Tag for c in panel.Controls if isinstance(c, CheckBox) and c.Checked and c.Tag]
+        if not sel:
+            MessageBox.Show("Не выбрано!")
             return
         
-        fields = {
-            'Отступ X': tb_margin_x.Text,
-            'Отступ Y': tb_margin_y.Text,
-            'Зазор X': tb_gap_x.Text,
-            'Зазор Y': tb_gap_y.Text,
-            'Штамп': tb_titleblock.Text,
-        }
-        
-        values = {}
-        for name, text in fields.items():
+        vals = {}
+        for name in ['Отступ X', 'Отступ Y', 'Зазор X', 'Зазор Y', 'Штамп']:
             try:
-                val = int(text)
-            except ValueError:
-                MessageBox.Show("Поле '" + name + "' должно содержать целое число!", "Ошибка")
+                v = int(textboxes[name].Text)
+            except Exception:
+                MessageBox.Show("Поле '" + name + "' — число!")
                 return
-            if val < 0:
-                MessageBox.Show("Поле '" + name + "' не может быть отрицательным!", "Ошибка")
+            if v < 0:
+                MessageBox.Show("Поле '" + name + "' >= 0!")
                 return
-            values[name] = val
+            vals[name] = v
         
-        if values['Отступ X'] * 2 >= sheet_w:
-            MessageBox.Show("Отступы X превышают ширину листа!", "Ошибка")
-            return
-        if values['Отступ Y'] * 2 >= sheet_h:
-            MessageBox.Show("Отступы Y превышают высоту листа!", "Ошибка")
+        if vals['Отступ X']*2 >= sheet_w or vals['Отступ Y']*2 >= sheet_h:
+            MessageBox.Show("Отступы > лист!")
             return
         
-        result['views'] = selected
+        result['views'] = sel
         result['settings'] = {
-            'margin_x': values['Отступ X'],
-            'margin_y': values['Отступ Y'],
-            'gap_x': values['Зазор X'],
-            'gap_y': values['Зазор Y'],
-            'titleblock_offset': values['Штамп'],
-            'sheet_prefix': tb_prefix.Text.strip(),
+            'margin_x': vals['Отступ X'], 'margin_y': vals['Отступ Y'],
+            'gap_x': vals['Зазор X'], 'gap_y': vals['Зазор Y'],
+            'titleblock_offset': vals['Штамп'], 'sheet_prefix': tpf.Text.strip()
         }
         form.DialogResult = DialogResult.OK
         form.Close()
     
-    def on_cancel(s, e):
+    def cancel(s, e):
         form.DialogResult = DialogResult.Cancel
         form.Close()
     
-    btn_ok = Button()
-    btn_ok.Text = "▶ Разместить виды"
-    btn_ok.Location = Point(350, y)
-    btn_ok.Size = Size(160, 40)
-    btn_ok.Font = Font("Arial", 10, FontStyle.Bold)
-    btn_ok.BackColor = Color.LightGreen
-    btn_ok.Click += on_ok
-    form.Controls.Add(btn_ok)
+    bok = Button()
+    bok.Text = "▶ Разместить"
+    bok.Location = Point(350, y)
+    bok.Size = Size(140, 40)
+    bok.Font = Font("Arial", 10, FontStyle.Bold)
+    bok.BackColor = Color.LightGreen
+    bok.Click += ok
+    form.Controls.Add(bok)
     
-    btn_cancel = Button()
-    btn_cancel.Text = "Отмена"
-    btn_cancel.Location = Point(520, y)
-    btn_cancel.Size = Size(120, 40)
-    btn_cancel.Click += on_cancel
-    form.Controls.Add(btn_cancel)
+    bc = Button()
+    bc.Text = "Отмена"
+    bc.Location = Point(500, y)
+    bc.Size = Size(120, 40)
+    bc.Click += cancel
+    form.Controls.Add(bc)
     
     form.ShowDialog()
-    
-    if result['views']:
-        return result['views'], result['settings']
-    return None, None
+    return (result['views'], result['settings']) if result['views'] else (None, None)
 
 
 # ============ MAIN ============
 
 def main():
-    import time
+    global SHOW_LOGS, LOG_COLLECTOR, CREATION_WARNINGS
+    LOG_COLLECTOR = []
+    CREATION_WARNINGS = []
+    
     start_total = time.time()
     
-    print("\n" + "=" * 60)
-    print("  Размещение видов на листы v6.0")
-    print("=" * 60 + "\n")
+    # Настройка групп
+    custom_grouping, show_logs_flag = show_group_config_form()
+    SHOW_LOGS = show_logs_flag
     
-    # Очищаем кэш размеров видов
-    VIEW_SIZE_CACHE.clear()
-    print("🧹 Кэш размеров видов очищен")
-    
-    # Запрашиваем настройку групп
-    global GROUPING
-    custom_grouping = show_group_config_form()
     if custom_grouping is not None:
+        global GROUPING
         GROUPING = custom_grouping
-        print("📋 Используется пользовательская группировка:")
+        log_message("📋 Пользовательская группировка:")
         for name, prefixes in GROUPING.items():
-            print("  " + name + ": " + ", ".join(prefixes))
+            log_message("  " + name + ": " + ", ".join(prefixes))
     else:
         GROUPING = OrderedDict(DEFAULT_GROUPING)
-        print("📋 Используется группировка по умолчанию")
+        log_message("📋 Группировка по умолчанию")
     
-    # Подробная информация о соответствии префиксов и групп
-    print("\n🔍 СООТВЕТСТВИЕ ПРЕФИКСОВ И ГРУПП:")
-    all_prefixes = []
-    for group_name, prefixes in GROUPING.items():
-        if prefixes:
-            all_prefixes.extend(prefixes)
-            print("  Группа '" + group_name + "': " + ", ".join(prefixes))
-        else:
-            print("  Группа '" + group_name + "': (пустая)")
-    # Префиксы, не входящие ни в одну группу
-    known_prefixes = set(all_prefixes)
-    print("  Всего уникальных префиксов в группах: " + str(len(known_prefixes)))
-    if known_prefixes:
-        print("  Список: " + ", ".join(sorted(known_prefixes)))
-    
-    # Статистика времени
-    total_analysis_time = 0.0
-    total_placement_time = 0.0
+    # Сбор видов с анимацией
+    search_form, search_label, search_sublabel, search_timer = show_search_animation("Сбор видов из проекта...")
+    update_search_text(search_form, search_label, search_sublabel, "Поиск 3D видов...")
     
     import shutil
     script_dir = os.path.dirname(os.path.abspath(__file__))
     debug_dir = os.path.join(script_dir, "AutoView_debug")
     
     if os.path.exists(debug_dir):
-        for filename in os.listdir(debug_dir):
-            file_path = os.path.join(debug_dir, filename)
+        for f in os.listdir(debug_dir):
             try:
-                if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path)
-                elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path)
-            except Exception as e:
-                print("⚠️ Не удалось удалить " + file_path + ": " + str(e))
-        print("🧹 Папка отладки очищена: " + debug_dir)
-    else:
-        os.makedirs(debug_dir)
-        print("📁 Создана папка отладки: " + debug_dir)
+                fp = os.path.join(debug_dir, f)
+                if os.path.isfile(fp):
+                    os.unlink(fp)
+            except Exception:
+                pass
     
     sel_ids = list(uidoc.Selection.GetElementIds())
     if not sel_ids:
-        MessageBox.Show("Выберите лист-шаблон перед запуском!", "Ошибка")
+        close_search_animation(search_form, search_timer)
+        MessageBox.Show("Выберите лист-шаблон!", "Ошибка")
         return
     
     template_sheet = doc.GetElement(sel_ids[0])
     if not isinstance(template_sheet, ViewSheet):
-        MessageBox.Show("Выбранный элемент не является листом!", "Ошибка")
+        close_search_animation(search_form, search_timer)
+        MessageBox.Show("Не лист!", "Ошибка")
         return
     
-    print("📄 Лист-шаблон: " + template_sheet.SheetNumber + " — '" + template_sheet.Name + "'")
-    
+    update_search_text(search_form, search_label, search_sublabel, "Чтение параметров листа...")
     frame_info = get_sheet_frame_mm(template_sheet)
     if not frame_info:
-        MessageBox.Show("Не удалось определить размеры листа!", "Ошибка")
+        close_search_animation(search_form, search_timer)
+        MessageBox.Show("Нет рамки!", "Ошибка")
         return
     
     frame_w, frame_h, frame_min_x, frame_min_y = frame_info
-    print("📐 Рамка: " + str(int(frame_w)) + "x" + str(int(frame_h)) + " мм")
-    print("  Начало рамки в системе Revit: X={:.1f} мм, Y={:.1f} мм".format(frame_min_x, frame_min_y))
-    print("  Нормализация: сдвиг X={:.1f} мм, Y={:.1f} мм".format(-frame_min_x, -frame_min_y))
+    log_message("📐 Рамка: " + str(int(frame_w)) + "x" + str(int(frame_h)) + " мм")
     
-    shift_x = -frame_min_x
-    shift_y = -frame_min_y
-    print("  После нормализации: начало в (0, 0) мм")
-    
+    update_search_text(search_form, search_label, search_sublabel, "Поиск 3D видов...")
     placed_cache = collect_placed_views()
+    all_3d = list(FilteredElementCollector(doc).OfClass(View3D).WhereElementIsNotElementType().ToElements())
     
-    all_3d = list(FilteredElementCollector(doc)
-                  .OfClass(View3D)
-                  .WhereElementIsNotElementType()
-                  .ToElements())
-    
+    update_search_text(search_form, search_label, search_sublabel, "Группировка видов...")
     views_data = []
     for view in all_3d:
         if view.IsTemplate or view.Id in placed_cache:
             continue
         prefix, _ = extract_prefix_and_numbers(view.Name)
-        # Добавляем все виды, включая без префикса (они попадут в группу "Без системы")
         views_data.append((view, get_group_for_prefix(prefix)))
     
-    print("🔍 3D виды: всего " + str(len(all_3d)) + ", доступно " + str(len(views_data)))
+    log_message("🔍 3D виды: всего " + str(len(all_3d)) + ", доступно " + str(len(views_data)))
     
-    # Подробный анализ соответствия видов и групп
-    print("\n🔍 АНАЛИЗ СООТВЕТСТВИЯ ВИДОВ ГРУППАМ:")
-    group_counts = {}
-    for view, group in views_data:
-        prefix, _ = extract_prefix_and_numbers(view.Name)
-        group_counts[group] = group_counts.get(group, 0) + 1
-        # Выводим информацию для первых 10 видов, чтобы не засорять лог
-        if group_counts[group] <= 3:
-            print("  Вид '" + view.Name + "': префикс='" + prefix + "', группа='" + group + "'")
-    # Сводка по группам
-    print("\n📊 РАСПРЕДЕЛЕНИЕ ВИДОВ ПО ГРУППАМ:")
-    for group, count in sorted(group_counts.items()):
-        print("  Группа '" + group + "': " + str(count) + " видов")
-    # Префиксы, не попавшие ни в одну группу (должны быть в группе "Без системы")
-    unknown_prefixes = set()
-    for view, group in views_data:
-        if group == "Без системы":
-            prefix, _ = extract_prefix_and_numbers(view.Name)
-            unknown_prefixes.add(prefix)
-    if unknown_prefixes:
-        print("  Префиксы без группы: " + ", ".join(sorted(unknown_prefixes)))
+    update_search_text(search_form, search_label, search_sublabel, "Найдено: " + str(len(views_data)) + " видов")
+    time.sleep(0.5)
+    close_search_animation(search_form, search_timer)
     
     if not views_data:
-        MessageBox.Show("Нет доступных 3D видов для размещения!", "Информация")
+        MessageBox.Show("Нет видов!", "Информация")
         return
     
     views_data.sort(key=lambda x: (
@@ -2072,12 +1734,12 @@ def main():
         get_view_sort_key(x[0])
     ))
     
+    # Выбор видов
     selected_views, settings = show_placement_form(views_data, frame_w, frame_h)
     if not selected_views:
-        print("👋 Отменено пользователем")
         return
     
-    print("✅ Выбрано видов: " + str(len(selected_views)))
+    log_message("✅ Выбрано видов: " + str(len(selected_views)))
     
     mx = settings['margin_x']
     my = settings['margin_y']
@@ -2090,125 +1752,86 @@ def main():
     for view in selected_views:
         prefix, _ = extract_prefix_and_numbers(view.Name)
         groups[get_group_for_prefix(prefix)].append(view)
-    
     for g in groups:
         groups[g].sort(key=get_view_sort_key)
     
-    print("\n📊 Группы для размещения:")
-    for g in groups:
-        print("  " + g + ": " + str(len(groups[g])) + " видов")
-        # Собираем префиксы в этой группе
-        prefixes_in_group = {}
-        for v in groups[g]:
-            prefix, _ = extract_prefix_and_numbers(v.Name)
-            prefixes_in_group[prefix] = prefixes_in_group.get(prefix, 0) + 1
-        # Выводим префиксы
-        if prefixes_in_group:
-            prefix_summary = ", ".join([p + "(" + str(c) + ")" for p, c in sorted(prefixes_in_group.items())])
-            print("    Префиксы: " + prefix_summary)
-        # Выводим первые 5 видов (или все, если меньше)
-        max_show = 5
-        for i, v in enumerate(groups[g][:max_show]):
-            prefix, numbers = extract_prefix_and_numbers(v.Name)
-            numbers_str = ", ".join(str(n) for n in numbers) if numbers else "?"
-            print("    " + str(i+1) + ". " + v.Name + " (префикс: " + prefix + ", номер: " + numbers_str + ")")
-        if len(groups[g]) > max_show:
-            print("    ... и еще " + str(len(groups[g]) - max_show) + " видов")
-    
-    print("\n Анализ видов...")
+    # Анализ с прогресс-панелью
+    progress_form, grid, stage, progress, pct = show_progress_panel("Анализ видов")
+    all_selected = [(v, get_group_for_prefix(extract_prefix_and_numbers(v.Name)[0])) for v in selected_views]
+    update_grid(progress_form, grid, all_selected, 0, 0)
+    update_progress_info(progress_form, stage, progress, pct,
+                         "Начинаю анализ " + str(len(selected_views)) + " видов...", "")
     
     view_sizes = {}
     failed = []
-    analysis_stats = {'times': []}  # для сбора времени анализа
+    analysis_stats = {'times': []}
     
     analysis_t = Transaction(doc, "Analyze views")
     analysis_t.Start()
     
     try:
-        for v in selected_views:
+        for idx, v in enumerate(selected_views):
+            update_grid(progress_form, grid, all_selected, idx, idx)
+            pct_text = str(int((idx + 1) / len(selected_views) * 90)) + "%"
+            update_progress_info(progress_form, stage, progress, pct,
+                                 "Анализ: " + get_view_short_name(v.Name), pct_text)
+            
+            log_message("  📐 Анализ: " + v.Name)
             size = measure_view_with_calibration(v, stats=analysis_stats)
+            
             if size:
                 view_sizes[v.Id] = size
-                print("    ✅ " + v.Name + ": " + "{:.1f}".format(size[0]) + "x" + "{:.1f}".format(size[1]) + " мм")
+                update_grid(progress_form, grid, all_selected, idx, idx + 1)
+                log_message("    ✅ " + str(int(size[0])) + "x" + str(int(size[1])) + " мм")
             else:
-                print("    ❌ Вид пропускается: " + v.Name)
                 failed.append(v)
+                update_grid(progress_form, grid, all_selected, idx, idx + 1)
+                log_message("    ❌ Не удалось определить размер")
         
         analysis_t.RollBack()
-        print("   🔄 Транзакция анализа отменена")
-        
-        # Суммируем время анализа
-        if analysis_stats['times']:
-            total_analysis_time = sum(analysis_stats['times'])
-            print("   ⏱ Итого анализ: {:.2f} сек ({} видов)".format(
-                total_analysis_time, len(analysis_stats['times'])))
     
     except Exception as ex:
         if analysis_t.HasStarted() and not analysis_t.HasEnded():
             analysis_t.RollBack()
+        log_message("  ❌ Ошибка анализа: " + str(ex))
         raise ex
     
-    if failed:
-        print("\n  ⚠️ Не удалось проанализировать " + str(len(failed)) + " видов:")
-        for fv in failed:
-            print("     - " + fv.Name)
-        print()
-    
     if not view_sizes:
-        MessageBox.Show("Не удалось определить размеры ни одного вида!", "Ошибка")
+        progress_form.Close()
+        MessageBox.Show("Нет размеров!", "Ошибка")
         return
     
-    stamp_width = 185  # ширина штампа (правая часть листа) - не вычитаем из доступной ширины
-    stamp_height = tb_off  # высота штампа (нижняя часть листа)
-    # Доступная ширина - полная ширина минус отступы (штамп не вычитаем из ширины)
+    # Размещение
+    update_progress_info(progress_form, stage, progress, pct, "Размещение на листах...", "92%")
+    
+    stamp_width = STAMP_WIDTH_MM
+    stamp_height = tb_off
     avail_w = int(frame_w - 2 * mx)
-    # Доступная высота - полная высота минус верхний отступ и высота штампа
     avail_h = int(frame_h - my - stamp_height)
     if avail_w <= 0 or avail_h <= 0:
-        print("⚠️ Доступная область после вычета штампа слишком мала, используем исходные размеры")
         avail_w = int(frame_w - 2 * mx)
         avail_h = int(frame_h - my)
-    
-    # Подробная информация о штампе и доступной области
-    print("\n📋 ИНФОРМАЦИЯ О РАЗМЕЩЕНИИ НА ЛИСТЕ:")
-    print("  Размер листа: {}x{} мм".format(int(frame_w), int(frame_h)))
-    print("  Отступы: X={} мм, Y={} мм".format(mx, my))
-    print("  Штамп (основная надпись):")
-    print("    - Размер: {}x{} мм".format(stamp_width, stamp_height))
-    print("    - Расположение: правый нижний угол")
-    print("    - Координаты углов: левый нижний=({}, {}), правый верхний=({}, {})".format(
-        int(frame_w - stamp_width), int(0), int(frame_w), int(stamp_height)))
-    print("  Доступная область для видов: {}x{} мм".format(avail_w, avail_h))
-    print("  Координаты доступной области: левый нижний=({}, {}), правый верхний=({}, {})".format(
-        int(mx), int(stamp_height), int(frame_w - mx), int(frame_h - my)))
     
     all_sheets = FilteredElementCollector(doc).OfClass(ViewSheet).ToElements()
     used_numbers = {s.SheetNumber for s in all_sheets}
     
     tmpl_num = template_sheet.SheetNumber
     match = re.search(r'(\d+)$', tmpl_num)
-    if match:
-        num_prefix = tmpl_num[:match.start()]
-        next_num = int(match.group(1)) + 1
-    else:
-        num_prefix = tmpl_num + '_'
-        next_num = 1
+    num_prefix = tmpl_num[:match.start()] if match else tmpl_num + '_'
+    next_num = int(match.group(1)) + 1 if match else 1
     
     class SheetNumberGenerator:
         def __init__(self):
-            self.prefix = num_prefix
-            self.current = next_num
-            self.used = used_numbers
-        
+            self.p = num_prefix
+            self.c = next_num
+            self.u = used_numbers
         def get_next(self):
             while True:
-                candidate = self.prefix + str(self.current)
-                self.current += 1
-                if candidate not in self.used:
-                    self.used.add(candidate)
-                    return candidate
-                if self.current > 99999:
-                    raise Exception("Не удалось найти свободный номер листа!")
+                cand = self.p + str(self.c)
+                self.c += 1
+                if cand not in self.u:
+                    self.u.add(cand)
+                    return cand
     
     num_gen = SheetNumberGenerator()
     
@@ -2216,7 +1839,6 @@ def main():
     sheet_count = 0
     skipped_views = []
     
-    placement_start = time.time()
     t = Transaction(doc, "Place views")
     t.Start()
     try:
@@ -2225,17 +1847,14 @@ def main():
                 continue
             
             remaining = list(groups[group_name])
+            log_message("📋 Группа: " + group_name + " (" + str(len(remaining)) + " видов)")
             
             while remaining:
-                fit_views = []
-                fit_rects = []
-                oversize_views = []
-                unknown_views = []
+                fit_views, fit_rects, oversize_views, unknown_views = [], [], [], []
                 
                 for v in remaining:
                     size = view_sizes.get(v.Id)
                     if not size:
-                        print("      ? " + v.Name + ": нет размера -> unknown")
                         unknown_views.append(v)
                         continue
                     
@@ -2243,213 +1862,134 @@ def main():
                     hg = int(math.ceil(size[1] + gy))
                     
                     if wg <= avail_w and hg <= avail_h:
-                        print("      ✓ " + v.Name + ": " + "{:.1f}".format(size[0]) + "x" + "{:.1f}".format(size[1]) + " мм + зазоры " + str(wg) + "x" + str(hg) + " -> fit")
                         fit_views.append(v)
                         fit_rects.append((wg, hg, v.Id))
                     else:
-                        print("      ⚠ " + v.Name + ": " + "{:.1f}".format(size[0]) + "x" + "{:.1f}".format(size[1]) + " мм + зазоры " + str(wg) + "x" + str(hg) + " > доступно " + str(avail_w) + "x" + str(avail_h) + " -> oversize")
                         oversize_views.append(v)
                 
-                processed_set = set(v.Id for v in fit_views + oversize_views + unknown_views)
-                remaining = [v for v in remaining if v.Id not in processed_set]
-                
-                print("      Итого: fit=" + str(len(fit_views)) + ", oversize=" + str(len(oversize_views)) + ", unknown=" + str(len(unknown_views)) + ", remaining=" + str(len(remaining)))
+                done = set(v.Id for v in fit_views + oversize_views + unknown_views)
+                remaining = [v for v in remaining if v.Id not in done]
                 
                 for v in oversize_views:
                     vw, vh = view_sizes[v.Id]
-                    new_sheet = create_sheet(template_sheet)
-                    new_sheet.SheetNumber = num_gen.get_next()
-                    clear_sheet_viewports(new_sheet)
+                    ns = create_sheet(template_sheet)
+                    ns.SheetNumber = num_gen.get_next()
+                    clear_sheet_viewports(ns)
                     
                     left_x = mx + max(0, (avail_w - vw) // 2)
                     left_y = stamp_height + max(0, (avail_h - vh) // 2)
-                    # Viewport.Create ожидает координаты ЦЕНТРА видового экрана
-                    center_x = left_x + vw / 2.0
-                    center_y = left_y + vh / 2.0
-                    # frame_min_x, frame_min_y - положение рамки в системе Revit
-                    x_mm = frame_min_x + center_x
-                    y_mm = frame_min_y + center_y
+                    cx = left_x + vw / 2.0
+                    cy = left_y + vh / 2.0
                     
-                    # Отладочная информация о размещении
-                    print("  📐 Размещение негабаритного вида:")
-                    print("     Размер вида: {}x{} мм".format(int(vw), int(vh)))
-                    print("     Доступная область: {}x{} мм (с учетом штампа {}x{} мм)".format(
-                        avail_w, avail_h, stamp_width, stamp_height))
-                    print("     Система координат:")
-                    print("       - Начало рамки в Revit: X={:.1f} мм, Y={:.1f} мм".format(frame_min_x, frame_min_y))
-                    print("       - Сдвиг нормализации: X={:.1f} мм, Y={:.1f} мм".format(shift_x, shift_y))
-                    print("       - Координаты от угла рамки: X={} мм, Y={} мм".format(int(left_x), int(left_y)))
-                    print("     Итоговые координаты в Revit: X={:.1f} мм, Y={:.1f} мм".format(x_mm, y_mm))
-                    print("     Координаты углов в Revit: левый нижний=({:.1f}, {:.1f}), правый верхний=({:.1f}, {:.1f})".format(
-                        x_mm, y_mm, x_mm + vw, y_mm + vh))
-                    print("     Передаем в Viewport.Create: X={:.3f} фут, Y={:.3f} фут".format(
-                        x_mm / 304.8, y_mm / 304.8))
-                    
-                    Viewport.Create(doc, new_sheet.Id, v.Id,
-                                   XYZ(x_mm / 304.8, y_mm / 304.8, 0))
-                    
-                    prefix = sheet_prefix if sheet_prefix else group_name
-                    new_sheet.Name = sanitize_sheet_name(
-                        prefix + ": " + get_view_short_name(v.Name))
-                    
-                    sheet_count += 1
-                    total_placed += 1
-                    print("  📄 Лист " + new_sheet.SheetNumber + ": " + v.Name + " (негабарит " + str(int(vw)) + "x" + str(int(vh)) + ")")
+                    try:
+                        Viewport.Create(doc, ns.Id, v.Id, XYZ((frame_min_x + cx) / 304.8, (frame_min_y + cy) / 304.8, 0))
+                        
+                        p = sheet_prefix if sheet_prefix else group_name
+                        # Проверка имени на запрещённые символы
+                        safe_name = sanitize_sheet_name(p + ": " + get_view_short_name(v.Name))
+                        ns.Name = safe_name
+                        sheet_count += 1
+                        total_placed += 1
+                        log_message("  📄 " + ns.SheetNumber + ": " + v.Name)
+                    except Exception as ex:
+                        warn_creation("Не удалось создать лист для вида '" + v.Name + "': " + str(ex))
                 
                 for v in unknown_views:
                     skipped_views.append(v)
-                    print("  ⚠️ Пропущен (нет размера): " + v.Name)
-                
+                    log_message("  ⚠️ Пропущен: " + v.Name)
                 if not fit_rects:
                     continue
                 
                 placements = find_best_fill(fit_rects, avail_w, avail_h)
                 
                 if not placements:
-                    print("  ⚠️ Упаковщик не справился, размещаем по одному")
                     for v in fit_views:
                         vw, vh = view_sizes[v.Id]
-                        new_sheet = create_sheet(template_sheet)
-                        new_sheet.SheetNumber = num_gen.get_next()
-                        clear_sheet_viewports(new_sheet)
+                        ns = create_sheet(template_sheet)
+                        ns.SheetNumber = num_gen.get_next()
+                        clear_sheet_viewports(ns)
                         
                         left_x = mx + max(0, (avail_w - vw) // 2)
                         left_y = stamp_height + max(0, (avail_h - vh) // 2)
-                        # Viewport.Create ожидает координаты ЦЕНТРА видового экрана
-                        center_x = left_x + vw / 2.0
-                        center_y = left_y + vh / 2.0
-                        # frame_min_x, frame_min_y - положение рамки в системе Revit
-                        x_mm = frame_min_x + center_x
-                        y_mm = frame_min_y + center_y
+                        cx = left_x + vw / 2.0
+                        cy = left_y + vh / 2.0
                         
-                        # Отладочная информация о размещении
-                        print("  📐 Размещение одиночного вида (упаковщик не справился):")
-                        print("     Размер вида: {}x{} мм".format(int(vw), int(vh)))
-                        print("     Доступная область: {}x{} мм (с учетом штампа {}x{} мм)".format(
-                            avail_w, avail_h, stamp_width, stamp_height))
-                        print("     Система координат:")
-                        print("       - Начало рамки в Revit: X={:.1f} мм, Y={:.1f} мм".format(frame_min_x, frame_min_y))
-                        print("       - Сдвиг нормализации: X={:.1f} мм, Y={:.1f} мм".format(shift_x, shift_y))
-                        print("       - Координаты от угла рамки: X={} мм, Y={} мм".format(int(left_x), int(left_y)))
-                        print("     Итоговые координаты в Revit: X={:.1f} мм, Y={:.1f} мм".format(x_mm, y_mm))
-                        print("     Координаты углов в Revit: левый нижний=({:.1f}, {:.1f}), правый верхний=({:.1f}, {:.1f})".format(
-                            x_mm, y_mm, x_mm + vw, y_mm + vh))
-                        print("     Передаем в Viewport.Create: X={:.3f} фут, Y={:.3f} фут".format(
-                            x_mm / 304.8, y_mm / 304.8))
-                        
-                        Viewport.Create(doc, new_sheet.Id, v.Id,
-                                       XYZ(x_mm / 304.8, y_mm / 304.8, 0))
-                        
-                        prefix = sheet_prefix if sheet_prefix else group_name
-                        new_sheet.Name = sanitize_sheet_name(
-                            prefix + ": " + get_view_short_name(v.Name))
-                        
-                        sheet_count += 1
-                        total_placed += 1
+                        try:
+                            Viewport.Create(doc, ns.Id, v.Id, XYZ((frame_min_x + cx) / 304.8, (frame_min_y + cy) / 304.8, 0))
+                            safe_name = sanitize_sheet_name((sheet_prefix if sheet_prefix else group_name) + ": " + get_view_short_name(v.Name))
+                            ns.Name = safe_name
+                            sheet_count += 1
+                            total_placed += 1
+                        except Exception as ex:
+                            warn_creation("Не удалось создать лист: " + str(ex))
                     continue
                 
-                placed_ids = set(p[4] for p in placements)
-                placed_views = [v for v in fit_views if v.Id in placed_ids]
+                pids = set(p[4] for p in placements)
+                pv = [v for v in fit_views if v.Id in pids]
                 
-                new_sheet = create_sheet(template_sheet)
-                new_sheet.SheetNumber = num_gen.get_next()
-                clear_sheet_viewports(new_sheet)
+                ns = create_sheet(template_sheet)
+                ns.SheetNumber = num_gen.get_next()
+                clear_sheet_viewports(ns)
                 
-                # Отладочная информация о размещении группы видов
-                print("  📐 Размещение группы видов ({} шт) на листе {}:".format(
-                    len(placements), new_sheet.SheetNumber))
-                print("     Доступная область: {}x{} мм (с учетом штампа {}x{} мм)".format(
-                    avail_w, avail_h, stamp_width, stamp_height))
-                print("     Область штампа: правый нижний угол, размер {}x{} мм".format(
-                    stamp_width, stamp_height))
-                
-                for idx, (x, y, w, h, vid) in enumerate(placements, 1):
-                    view = next((v for v in placed_views if v.Id == vid), None)
-                    if not view:
+                for x, y, w, h, vid in placements:
+                    v = next((vv for vv in pv if vv.Id == vid), None)
+                    if not v:
                         continue
                     vw, vh = view_sizes[vid]
                     
                     left_x = mx + x
                     left_y = stamp_height + y
-                    # Viewport.Create ожидает координаты ЦЕНТРА видового экрана
-                    center_x = left_x + vw / 2.0
-                    center_y = left_y + vh / 2.0
-                    # frame_min_x, frame_min_y - положение рамки в системе Revit
-                    x_mm = frame_min_x + center_x
-                    y_mm = frame_min_y + center_y
+                    cx = left_x + vw / 2.0
+                    cy = left_y + vh / 2.0
                     
-                    # Отладочная информация для каждого вида
-                    print("     Вид {}: {}".format(idx, get_view_short_name(view.Name)))
-                    print("       Размер: {}x{} мм".format(int(vw), int(vh)))
-                    print("       Система координат:")
-                    print("         - Начало рамки в Revit: X={:.1f} мм, Y={:.1f} мм".format(frame_min_x, frame_min_y))
-                    print("         - Сдвиг нормализации: X={:.1f} мм, Y={:.1f} мм".format(shift_x, shift_y))
-                    print("         - Координаты от угла рамки: X={} мм, Y={} мм".format(int(left_x), int(left_y)))
-                    print("       Итоговые координаты в Revit: X={:.1f} мм, Y={:.1f} мм".format(x_mm, y_mm))
-                    print("       Координаты углов в Revit: левый нижний=({:.1f}, {:.1f}), правый верхний=({:.1f}, {:.1f})".format(
-                        x_mm, y_mm, x_mm + vw, y_mm + vh))
-                    print("       Передаем в Viewport.Create: X={:.3f} фут, Y={:.3f} фут".format(
-                        x_mm / 304.8, y_mm / 304.8))
-                    
-                    Viewport.Create(doc, new_sheet.Id, view.Id,
-                                   XYZ(x_mm / 304.8, y_mm / 304.8, 0))
+                    Viewport.Create(doc, ns.Id, v.Id, XYZ((frame_min_x + cx) / 304.8, (frame_min_y + cy) / 304.8, 0))
                 
-                short_names = [get_view_short_name(v.Name) for v in placed_views]
-                prefix = sheet_prefix if sheet_prefix else group_name
-                new_sheet.Name = sanitize_sheet_name(
-                    prefix + ": " + ", ".join(short_names))
+                sn = [get_view_short_name(v.Name) for v in pv]
+                p = sheet_prefix if sheet_prefix else group_name
+                try:
+                    ns.Name = sanitize_sheet_name(p + ": " + ", ".join(sn))
+                    sheet_count += 1
+                    total_placed += len(pv)
+                    log_message("  📄 " + ns.SheetNumber + ": " + str(len(pv)) + " видов")
+                except Exception as ex:
+                    warn_creation("Не удалось задать имя листа: " + str(ex))
                 
-                sheet_count += 1
-                total_placed += len(placed_views)
-                print("  📄 Лист " + new_sheet.SheetNumber + ": " + str(len(placed_views)) + " видов — " + ", ".join(v.Name for v in placed_views))
-                
-                # Добавляем неразмещённые fit виды обратно в remaining для следующей итерации
-                unplaced_fit_views = [v for v in fit_views if v.Id not in placed_ids]
-                if unplaced_fit_views:
-                    remaining.extend(unplaced_fit_views)
-                    print("  🔄 Неразмещённые fit виды (" + str(len(unplaced_fit_views)) + "): " + ", ".join(v.Name for v in unplaced_fit_views))
+                unplaced = [v for v in fit_views if v.Id not in pids]
+                if unplaced:
+                    remaining.extend(unplaced)
         
         t.Commit()
-        placement_time = time.time() - placement_start
-        
-        print("\n" + "=" * 60)
-        print("  ✅ Готово!")
-        print("  Создано листов: " + str(sheet_count))
-        print("  Размещено видов: " + str(total_placed))
-        if skipped_views:
-            print("  Пропущено видов: " + str(len(skipped_views)))
-        print("  ⏱ Время размещения: {:.2f} сек".format(placement_time))
-        print("=" * 60 + "\n")
-        
-        msg = "Готово!\n\nСоздано листов: " + str(sheet_count) + "\nРазмещено видов: " + str(total_placed)
-        if skipped_views:
-            msg += "\n\nПропущено видов: " + str(len(skipped_views))
-        MessageBox.Show(msg, "Готово")
     
     except Exception as ex:
         if t.HasStarted() and not t.HasEnded():
             t.RollBack()
-        MessageBox.Show("Ошибка при размещении видов: " + str(ex), "Ошибка")
-        import traceback
-        traceback.print_exc()
+        log_message("❌ Ошибка размещения: " + str(ex))
+        MessageBox.Show("Ошибка: " + str(ex))
     
-    finally:
-        total_time = time.time() - start_total
-        print("\n  ⏱ Общее время выполнения скрипта: {:.2f} сек".format(total_time))
+    # Результаты
+    update_progress_info(progress_form, stage, progress, pct, "Готово!", "100%")
+    time.sleep(0.5)
+    progress_form.Close()
+    
+    total_time = time.time() - start_total
+    log_message("\n⏱ Общее время: " + str(round(total_time, 1)) + " сек")
+    log_message("✅ Листов: " + str(sheet_count) + ", видов: " + str(total_placed))
+    
+    show_results_form(sheet_count, total_placed, skipped_views, failed, total_time)
 
 
 def __selfinit__(script_cmp, ui_button_cmp, __rvt__):
     return True
+
 
 def __invoke__(script_cmp, ui_button_cmp, __rvt__):
     try:
         main()
         return True
     except Exception as e:
-        MessageBox.Show("Критическая ошибка: " + str(e), "Ошибка")
-        import traceback
-        traceback.print_exc()
+        MessageBox.Show("Критическая ошибка: " + str(e))
         return False
+
 
 if __name__ == "__main__":
     main()

@@ -28,6 +28,7 @@ tag_defaults.json
 *.swo
 *~
 
+
 # Резервные файлы
 *.bak
 *.tmp
