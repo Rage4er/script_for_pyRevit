@@ -6,10 +6,8 @@ import System
 
 clr.AddReference("System.Windows.Forms")
 clr.AddReference("System.Drawing")
-clr.AddReference("System.Threading")
 
 from System.Drawing import *
-from System.Threading import Timer
 from System.Windows.Forms import *
 
 
